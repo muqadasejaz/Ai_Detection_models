@@ -1,0 +1,24 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+# numpy>=1.26.0,<2.1.0 satisfies ALL components (text, image, video, audio)
+numpy>=1.26.0,<2.1.0
+streamlit>=1.40.0
+
+# ── Model downloader (Google Drive) ───────────────────────────────────────────
+gdown>=5.1.0
+
+# ── Text detection ────────────────────────────────────────────────────────────
+tensorflow==2.20.0
+keras>=3.7.0
+openai>=1.0.0
+
+# ── Image detection ───────────────────────────────────────────────────────────
+Pillow>=10.0.0
+
+# ── Video detection (ResNeXt50 + LSTM) ───────────────────────────────────────
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+
+# ── Audio detection ───────────────────────────────────────────────────────────
+librosa>=0.10.0
+matplotlib>=3.7.0
