@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  DeepSentinel 
+#  DeepSentinel
 #  Tabs: Text · Image · Video · Audio
 #
 #  DEPLOYMENT NOTE:
@@ -81,11 +81,21 @@ def _download_all_models():
         )
         return
 
-    missing = [
-        (fname, gdrive_secrets[key])
-        for fname, key in _DRIVE_FILES.items()
-        if not os.path.exists(fname) and key in gdrive_secrets
-    ]
+    # Hardcoded IDs for lstm models (bypass secrets for these two)
+    _HARDCODED = {
+        "lstm_main.h5":  "1jhO_HlI8CEL0VgXxih51SqsE9h60pxir",
+        "lstm_kfold.h5": "1-1e5psNK8Nb5wDUyg8vgpdM0Zi-8W6Mp",
+    }
+
+    missing = []
+    for fname, key in _DRIVE_FILES.items():
+        if os.path.exists(fname):
+            continue
+        if fname in _HARDCODED:
+            missing.append((fname, _HARDCODED[fname]))
+        elif key in gdrive_secrets:
+            missing.append((fname, gdrive_secrets[key]))
+
     if not missing:
         return
 
