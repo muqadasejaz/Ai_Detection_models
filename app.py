@@ -631,7 +631,7 @@ with tab_video:
             probs = VF.softmax(logits, dim=1)[0]
         return int(probs.argmax().item()), probs[0].item(), probs[1].item()
 
-    st.subheader("🎬 Deepfake Video Detector")
+    st.subheader("🎬 Video Detector")
     st.caption("ResNeXt50 + LSTM · face-aware · sequence modeling · 5 pretrained models · ensemble mode.")
     st.divider()
 
@@ -798,7 +798,7 @@ with tab_audio:
         ax.set_title("Mel Spectrogram (model input)", fontsize=10)
         ax.tick_params(labelsize=8); fig.tight_layout(); return fig
 
-    st.subheader("🎙️ Deepfake Audio Detector")
+    st.subheader("🎙️ Audio Detector")
     st.caption("Mel spectrogram CNN · WAV, MP3, FLAC, OGG · reflect padding · waveform + spectrogram visualization.")
     st.divider()
 
