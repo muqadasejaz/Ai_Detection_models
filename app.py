@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-#  DeepSentinel
+#  DeepSentinel — Combined AI / Deepfake Detection Suite
 #  Tabs: Text · Image · Video · Audio
 #
 #  DEPLOYMENT NOTE:
@@ -81,7 +81,7 @@ def _download_all_models():
         )
         return
 
-    # Hardcoded IDs for lstm models (bypass secrets for these two)
+    # Hardcoded IDs for lstm models
     _HARDCODED = {
         "lstm_main.h5":  "1jhO_HlI8CEL0VgXxih51SqsE9h60pxir",
         "lstm_kfold.h5": "1-1e5psNK8Nb5wDUyg8vgpdM0Zi-8W6Mp",
@@ -102,10 +102,7 @@ def _download_all_models():
     bar = st.progress(0, text="⬇️  Downloading model weights from Google Drive…")
     for i, (fname, file_id) in enumerate(missing):
         bar.progress(i / len(missing), text=f"⬇️  Downloading {fname}…")
-        url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
-        success = gdown.download(url, fname, quiet=False, fuzzy=True)
-        if success is None:
-            gdown.download(id=file_id, output=fname, quiet=False)
+        gdown.download(id=file_id, output=fname, quiet=False)
     bar.progress(1.0, text="✅  All models ready!")
     bar.empty()
 
