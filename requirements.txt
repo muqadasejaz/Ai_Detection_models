@@ -1,5 +1,4 @@
 # ── Core ──────────────────────────────────────────────────────────────────────
-# numpy>=1.26.0,<2.1.0 satisfies ALL components (text, image, video, audio)
 numpy>=1.26.0,<2.1.0
 streamlit>=1.40.0
 
@@ -18,6 +17,7 @@ Pillow>=10.0.0
 torch>=2.0.0
 torchvision>=0.15.0
 opencv-python>=4.8.0
+imageio[ffmpeg]
 
 # ── Audio detection ───────────────────────────────────────────────────────────
 librosa>=0.10.0
