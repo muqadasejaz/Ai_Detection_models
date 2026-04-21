@@ -50,9 +50,9 @@ st.set_page_config(
 
 # Map: local filename  →  key inside [gdrive] secrets section
 _DRIVE_FILES = {
-    "lstm_main.keras":                          "lstm_main",
+    "lstm_main.h5":                             "lstm_main",
     "tokenizer.pkl":                            "tokenizer",
-    "lstm_kfold.keras":                         "lstm_kfold",
+    "lstm_kfold.h5":                            "lstm_kfold",
     "tokenizer_lstm_best_kfold.pkl":            "tokenizer_kfold",
     "efficientnetb3_binary_classifier_8.h5":    "effnet",
     "EfficientNet_fine_tune_art_model.h5":      "effnet_art",
@@ -181,9 +181,9 @@ with st.sidebar:
     st.caption("Models are auto-downloaded from Google Drive on startup.")
 
     with st.expander("Text models"):
-        text_model_standard  = st.text_input("Standard model (.keras)",   value=os.environ.get("TEXT_MODEL_STANDARD", "lstm_main.keras"))
+        text_model_standard  = st.text_input("Standard model (.h5)",   value=os.environ.get("TEXT_MODEL_STANDARD", "lstm_main.h5"))
         text_tok_standard    = st.text_input("Standard tokenizer (.pkl)", value=os.environ.get("TEXT_TOK_STANDARD",   "tokenizer.pkl"))
-        text_model_pro       = st.text_input("Pro model (.keras)",        value=os.environ.get("TEXT_MODEL_PRO",      "lstm_kfold.keras"))
+        text_model_pro       = st.text_input("Pro model (.h5)",        value=os.environ.get("TEXT_MODEL_PRO",      "lstm_kfold.h5"))
         text_tok_pro         = st.text_input("Pro tokenizer (.pkl)",      value=os.environ.get("TEXT_TOK_PRO",        "tokenizer_lstm_best_kfold.pkl"))
 
     with st.expander("Image models"):
