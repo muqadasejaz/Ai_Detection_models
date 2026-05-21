@@ -39,14 +39,13 @@ def _download_from_drive(file_id: str, dest_path: str) -> str:
         import gdown
     except ImportError:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "-q", "gdown"],
+            [sys.executable, "-m", "pip", "install", "-q", "gdown>=4.0.0"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         import gdown
 
-    url = f"https://drive.google.com/uc?id={file_id}"
-    gdown.download(url, dest_path, quiet=True, fuzzy=True)
+    gdown.download(id=file_id, output=dest_path, quiet=True)
 
     if not os.path.exists(dest_path) or os.path.getsize(dest_path) < 1_000_000:
         raise RuntimeError(
@@ -125,7 +124,6 @@ def img_interpret(preds):
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.markdown('<div class="hero-title">🖼️ AI Image Detector</div>', unsafe_allow_html=True)
-st.caption("EfficientNetV2-B3 · 224×224 · Trained on 16 datasets")
 st.divider()
 
 if "img_prev" not in st.session_state:
@@ -181,10 +179,7 @@ with ir:
             unsafe_allow_html=True,
         )
 
-st.markdown(
-    '<div class="info-box">'
-    "<b>EfficientNetV2-B3</b> · 224×224 · float32 [0, 255] (no /255) · "
-    "Score ≥ 0.5 → AI Generated · Score &lt; 0.5 → Real Photo"
+
     "</div>",
     unsafe_allow_html=True,
 )
