@@ -124,6 +124,7 @@ def img_interpret(preds):
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.markdown('<div class="hero-title">🖼️ AI Image Detector</div>', unsafe_allow_html=True)
+st.caption("EfficientNetV2-B3 · 224×224 · Trained on 16 datasets")
 st.divider()
 
 if "img_prev" not in st.session_state:
@@ -179,7 +180,10 @@ with ir:
             unsafe_allow_html=True,
         )
 
-
+st.markdown(
+    '<div class="info-box">'
+    "<b>EfficientNetV2-B3</b> · 224×224 · float32 [0, 255] (no /255) · "
+    "Score ≥ 0.5 → AI Generated · Score &lt; 0.5 → Real Photo"
     "</div>",
     unsafe_allow_html=True,
 )
