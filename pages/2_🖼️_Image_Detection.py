@@ -75,12 +75,19 @@ def load_model(file_id: str):
 
 def get_drive_file_id() -> str:
     """
-    Pull the Google Drive file ID (or full URL) from st.secrets["effnet"].
+    Pull the Google Drive file ID (or full URL).
+    Checks st.secrets["gdrive"]["effnet"] first (nested section),
+    then falls back to st.secrets["effnet"] (flat key).
     Accepts either:
       - A bare file ID:  "1AbCdEfGhIjKlMnOpQrStUvWxYz"
       - A full URL:      "https://drive.google.com/file/d/<id>/view?..."
     """
-    raw = st.secrets["effnet"]
+    if "gdrive" in st.secrets and "effnet" in st.secrets["gdrive"]:
+        raw = st.secrets["gdrive"]["effnet"]
+    elif "effnet" in st.secrets:
+        raw = st.secrets["effnet"]
+    else:
+        raise KeyError("effnet")
     if "drive.google.com" in raw:
         # Extract the ID portion from the URL
         import re
