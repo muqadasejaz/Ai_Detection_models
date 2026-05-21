@@ -1,10 +1,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 #  pages/2_🖼️_Image_Detection.py
 #  AI Image Detector — EfficientNetV2-B3
-#  Model loaded from Google Drive via st.secrets["effnet"]
+#  Model loaded from Google Drive via st.secrets["gdrive"]["effnet"]
 # ─────────────────────────────────────────────────────────────────────────────
 import os
 import io
+import sys
+import subprocess
 import numpy as np
 import streamlit as st
 from PIL import Image as PILImage
@@ -24,63 +26,54 @@ with st.sidebar:
 # ── Google Drive model downloader ─────────────────────────────────────────────
 def _download_from_drive(file_id: str, dest_path: str) -> str:
     """
-    Download a file from Google Drive by file_id.
-    Uses the export/download URL — works for files shared with 'Anyone with link'.
-    Returns dest_path on success, raises on failure.
+    Download a file from Google Drive using gdown.
+    gdown handles the large-file virus-scan confirmation page that
+    raw requests calls miss, which causes Drive to return an HTML page
+    instead of the actual .h5 file (producing the 'file signature not found' error).
     """
-    import requests
+    if os.path.exists(dest_path) and os.path.getsize(dest_path) > 1_000_000:
+        return dest_path  # already cached and looks valid
 
-    dest = dest_path
-    if os.path.exists(dest):
-        return dest  # already cached
+    # Install gdown if not present
+    try:
+        import gdown
+    except ImportError:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", "-q", "gdown"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        import gdown
 
-    session = requests.Session()
-    url = "https://drive.google.com/uc"
-    params = {"id": file_id, "export": "download"}
-    response = session.get(url, params=params, stream=True)
+    url = f"https://drive.google.com/uc?id={file_id}"
+    gdown.download(url, dest_path, quiet=True, fuzzy=True)
 
-    # Handle the virus-scan warning page Google shows for large files
-    token = None
-    for key, value in response.cookies.items():
-        if key.startswith("download_warning"):
-            token = value
-            break
+    if not os.path.exists(dest_path) or os.path.getsize(dest_path) < 1_000_000:
+        raise RuntimeError(
+            "Model download failed or file is too small. "
+            "Make sure the Drive file is shared as 'Anyone with the link can view'."
+        )
 
-    if token:
-        params["confirm"] = token
-        response = session.get(url, params=params, stream=True)
-
-    # Stream to disk
-    with open(dest, "wb") as f:
-        for chunk in response.iter_content(chunk_size=32768):
-            if chunk:
-                f.write(chunk)
-
-    return dest
+    return dest_path
 
 
-@st.cache_resource(show_spinner="Loading model…")
+@st.cache_resource(show_spinner="Downloading and loading model…")
 def load_model(file_id: str):
-    """
-    Download cnn_detection.h5 from Drive (once, then cached),
-    then load it with Keras.
-    """
     import keras
-
     model_path = "/tmp/cnn_detection.h5"
     _download_from_drive(file_id, model_path)
-    model = keras.models.load_model(model_path, compile=False)
-    return model
+    return keras.models.load_model(model_path, compile=False)
 
 
 def get_drive_file_id() -> str:
     """
-    Pull the Google Drive file ID (or full URL).
-    Checks st.secrets["gdrive"]["effnet"] first (nested section),
-    then falls back to st.secrets["effnet"] (flat key).
-    Accepts either:
-      - A bare file ID:  "1AbCdEfGhIjKlMnOpQrStUvWxYz"
-      - A full URL:      "https://drive.google.com/file/d/<id>/view?..."
+    Read the Drive file ID from secrets.
+    Supports both layouts:
+      [gdrive]
+      effnet = "1t_X..."      ← nested (what the user has)
+
+      effnet = "1t_X..."      ← flat fallback
+    Also accepts a full Drive URL instead of a bare ID.
     """
     if "gdrive" in st.secrets and "effnet" in st.secrets["gdrive"]:
         raw = st.secrets["gdrive"]["effnet"]
@@ -88,41 +81,40 @@ def get_drive_file_id() -> str:
         raw = st.secrets["effnet"]
     else:
         raise KeyError("effnet")
+
+    raw = raw.strip()
+
     if "drive.google.com" in raw:
-        # Extract the ID portion from the URL
         import re
-        match = re.search(r"/d/([a-zA-Z0-9_-]+)", raw)
-        if match:
-            return match.group(1)
-        # Fallback: uc?id=... format
-        match = re.search(r"id=([a-zA-Z0-9_-]+)", raw)
-        if match:
-            return match.group(1)
-        raise ValueError(f"Could not parse Drive file ID from URL: {raw}")
-    return raw.strip()
+        m = re.search(r"/d/([a-zA-Z0-9_-]+)", raw) or \
+            re.search(r"id=([a-zA-Z0-9_-]+)", raw)
+        if not m:
+            raise ValueError(f"Could not parse Drive file ID from: {raw}")
+        return m.group(1)
+
+    return raw
 
 
 # ── Inference ─────────────────────────────────────────────────────────────────
 def img_run(pil_img, model):
     """
-    Preprocess and run a single PIL image through EfficientNetV2-B3.
-
-    CRITICAL: Feed as float32 in [0, 255].
-    DO NOT divide by 255 — the backbone uses include_preprocessing=True
-    and normalises internally ([0,255] → [-1,1]).
-    Input resolution: 224×224 (EfficientNetV2-B3 native).
+    EfficientNetV2-B3 preprocessing:
+      - Resize to 224×224 (native resolution)
+      - Cast to float32, keep range [0, 255]
+      - DO NOT divide by 255 — backbone uses include_preprocessing=True
+        and normalises internally
     """
     img = pil_img.convert("RGB").resize((224, 224), PILImage.LANCZOS)
-    arr = np.array(img, dtype=np.float32)          # [0, 255] — no /255
-    arr = np.expand_dims(arr, axis=0)              # (1, 224, 224, 3)
+    arr = np.array(img, dtype=np.float32)   # [0, 255] — no /255
+    arr = np.expand_dims(arr, axis=0)       # (1, 224, 224, 3)
     return model.predict(arr, verbose=0)
 
 
 def img_interpret(preds):
     """
-    score = P(AI-Generated).
-    score >= 0.5  →  AI Generated
-    score <  0.5  →  Real Photo
+    score = P(AI-Generated)
+    >= 0.5  →  AI Generated
+    <  0.5  →  Real Photo
     """
     score = float(preds[0][0])
     if score >= 0.5:
@@ -147,10 +139,8 @@ with il:
         type=["png", "jpg", "jpeg", "webp"],
         key="iup",
     )
-
     if uimg != st.session_state.img_prev:
         st.session_state.img_prev = uimg
-
     if uimg:
         ib = uimg.read()
         if len(ib) / (1024 ** 2) > 20:
@@ -162,13 +152,12 @@ with ir:
     rph = st.empty()
 
     if uimg:
-        # Load model (downloads once, then cached)
         try:
             file_id = get_drive_file_id()
         except KeyError:
             st.error(
-                '`effnet` secret not found. '
-                'Add your Google Drive file ID under **Settings → Secrets** as `effnet`.'
+                "`effnet` secret not found. Add it under **Settings → Secrets**:\n\n"
+                "```toml\n[gdrive]\neffnet = \"your_drive_file_id\"\n```"
             )
             st.stop()
         except ValueError as e:
@@ -194,8 +183,8 @@ with ir:
 
 st.markdown(
     '<div class="info-box">'
-    '<b>EfficientNetV2-B3</b> · 224×224 · float32 [0, 255] (no /255) · '
-    'Score ≥ 0.5 → AI Generated · Score &lt; 0.5 → Real Photo'
-    '</div>',
+    "<b>EfficientNetV2-B3</b> · 224×224 · float32 [0, 255] (no /255) · "
+    "Score ≥ 0.5 → AI Generated · Score &lt; 0.5 → Real Photo"
+    "</div>",
     unsafe_allow_html=True,
 )
