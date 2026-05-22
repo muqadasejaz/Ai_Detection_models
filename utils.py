@@ -6,12 +6,14 @@
 #  inside each page's cached loader so each weight downloads ONCE, on demand.
 # ─────────────────────────────────────────────────────────────────────────────
 import os
+import sys
+import pickle
 
-# Force the legacy Keras 2 backend so old .h5 models load under TF 2.20 (Keras 3
-# is the default in TF 2.20 and frequently fails to load Keras-2 .h5 files).
-# Must be set BEFORE tensorflow is imported anywhere — utils is imported first
-# in every page, so setting it here guarantees that.
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+# NOTE: we deliberately do NOT set TF_USE_LEGACY_KERAS. The models in this
+# project were saved with mixed Keras versions (the image CNN is Keras 3 — its
+# InputLayer uses `batch_shape`, which Keras 2 cannot read — while the text
+# tokenizer/LSTMs are Keras 2). load_keras_model() below tries both backends so
+# each model loads with whichever one saved it.
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
 import streamlit as st
@@ -173,3 +175,60 @@ def ensure_file(fname: str) -> str:
         st.stop()
 
     return fname
+
+
+# ── Cross-version Keras loading ────────────────────────────────────────────────
+#  Models here were saved with different Keras versions, so we try the Keras 3
+#  loader first and fall back to the legacy Keras 2 loader (tf-keras). Both
+#  packages are installed; TF_USE_LEGACY_KERAS is intentionally left unset so
+#  `import keras` == Keras 3 and `import tf_keras` == Keras 2 are both available.
+def load_keras_model(path, compile=False):
+    """Load an .h5/.keras model with whichever Keras backend can read it."""
+    errors = []
+    try:
+        import keras                              # Keras 3 (ships with TF 2.20)
+        return keras.models.load_model(path, compile=compile)
+    except Exception as e:
+        errors.append(f"Keras 3 → {type(e).__name__}: {e}")
+    try:
+        import tf_keras                           # legacy Keras 2
+        return tf_keras.models.load_model(path, compile=compile)
+    except Exception as e:
+        errors.append(f"Keras 2 (tf-keras) → {type(e).__name__}: {e}")
+    raise RuntimeError(
+        f"Could not load `{path}` with either Keras backend:\n  - "
+        + "\n  - ".join(errors)
+    )
+
+
+class _TokenizerCompatUnpickler(pickle.Unpickler):
+    """Redirect a pickled Keras Tokenizer to a backend that still defines it.
+    Keras 3 removed keras.preprocessing.text.Tokenizer, so old pickles must be
+    pointed at the tf-keras (Keras 2) implementation."""
+    def find_class(self, module, name):
+        if name == "Tokenizer" and "preprocessing" in module:
+            for mod in ("tf_keras.preprocessing.text",
+                        "keras.preprocessing.text",
+                        "keras.src.legacy.preprocessing.text",
+                        "keras_preprocessing.text"):
+                try:
+                    __import__(mod)
+                    return getattr(sys.modules[mod], "Tokenizer")
+                except Exception:
+                    continue
+        return super().find_class(module, name)
+
+
+def load_tokenizer_pickle(path):
+    """Unpickle a Keras Tokenizer saved under any Keras version."""
+    with open(path, "rb") as f:
+        return _TokenizerCompatUnpickler(f).load()
+
+
+def pad_sequences_compat(sequences, **kwargs):
+    """pad_sequences that works under Keras 3 or legacy Keras 2."""
+    try:
+        from keras.utils import pad_sequences as _ps                              # Keras 3
+    except Exception:
+        from tensorflow.keras.preprocessing.sequence import pad_sequences as _ps  # Keras 2
+    return _ps(sequences, **kwargs)
