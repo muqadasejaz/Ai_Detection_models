@@ -226,14 +226,13 @@
 import os
 import pickle
 
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import streamlit as st
 
 st.set_page_config(page_title="Text Detection · DeepSentinel", page_icon="📝", layout="wide")
 
-from utils import inject_css, ensure_file
+from utils import inject_css, ensure_file, load_keras_model, load_tokenizer_pickle, pad_sequences_compat
 inject_css()
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -281,18 +280,15 @@ OUTPUT: only the rewritten text.""",
 # ── Model loaders ─────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading text model…")
 def load_text_model(path):
-    from tensorflow.keras.models import load_model as _lm
-    return _lm(ensure_file(path))   # download once on first use
+    return load_keras_model(ensure_file(path), compile=False)   # download + load once
 
 @st.cache_resource(show_spinner="Loading tokenizer…")
 def load_tokenizer(path):
-    with open(ensure_file(path), "rb") as f:
-        return pickle.load(f)
+    return load_tokenizer_pickle(ensure_file(path))
 
 def text_predict(text, model, tokenizer):
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
     seq = tokenizer.texts_to_sequences([text])
-    pad = pad_sequences(seq, maxlen=TEXT_MAX_LEN, padding="post", truncating="post")
+    pad = pad_sequences_compat(seq, maxlen=TEXT_MAX_LEN, padding="post", truncating="post")
     return float(model.predict(pad, verbose=0)[0][0])
 
 def text_verdict(prob):
@@ -314,7 +310,6 @@ def _openai_call(client, prompt, text, temp):
 
 def humanize(text, api_key, model, tokenizer, threshold=0.45, aggressiveness="Balanced", status_cb=None):
     from openai import OpenAI
-    from tensorflow.keras.preprocessing.sequence import pad_sequences
     client = OpenAI(api_key=api_key)
     temps  = [0.88, 0.92, 0.95]
     cfg    = {"Light": {"start": 0, "max": 2}, "Balanced": {"start": 0, "max": 3}, "Aggressive": {"start": 1, "max": 3}}
@@ -322,7 +317,7 @@ def humanize(text, api_key, model, tokenizer, threshold=0.45, aggressiveness="Ba
     mx     = cfg[aggressiveness]["max"]
     def score(t):
         seq = tokenizer.texts_to_sequences([t])
-        pad = pad_sequences(seq, maxlen=TEXT_MAX_LEN, padding="post", truncating="post")
+        pad = pad_sequences_compat(seq, maxlen=TEXT_MAX_LEN, padding="post", truncating="post")
         return float(model.predict(pad, verbose=0)[0][0])
     best_t, best_s = text, score(text)
     cur = text; results = []
