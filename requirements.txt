@@ -5,9 +5,11 @@ streamlit>=1.40.0
 # ── Model downloader (Google Drive) ───────────────────────────────────────────
 gdown>=5.1.0
 
-# ── Text detection ────────────────────────────────────────────────────────────
+# ── Text / Image / Audio detection (TensorFlow + legacy Keras 2) ──────────────
+# TF 2.20 ships Keras 3 by default, which often fails to load Keras-2 .h5 files.
+# tf-keras + TF_USE_LEGACY_KERAS=1 (set in code) restores the Keras 2 loader.
 tensorflow==2.20.0
-keras>=3.7.0
+tf-keras>=2.17.0
 openai>=1.0.0
 
 # ── Image detection ───────────────────────────────────────────────────────────
