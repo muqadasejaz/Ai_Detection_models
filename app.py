@@ -858,11 +858,7 @@
 
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  app.py — DeepSentinel Landing Page
-#  Streamlit multi-page app entry point.
-#  Heavy models load only in their own page.
-# ─────────────────────────────────────────────────────────────────────────────
+# app.py — DeepSentinel Landing Page
 import os
 import streamlit as st
 
@@ -892,19 +888,15 @@ st.markdown("""
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🖼️ Image Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">CNN · EfficientNetB3 · EfficientNet Art</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">EfficientNetB3</div>
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🎬 Video Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">ResNeXt50 + LSTM · face-aware · ensemble</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">ResNeXt50 + LSTM · face-aware</div>
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🎙️ Audio Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">Mel spectrogram CNN · WAV MP3 FLAC OGG</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">Mel spectrogram CNN</div>
 </div>
 </div>
 """, unsafe_allow_html=True)
-
-st.divider()
-st.caption("Use the sidebar to navigate between detectors. Models download automatically from Google Drive on first use.")
-
