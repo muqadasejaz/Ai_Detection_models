@@ -2,21 +2,15 @@
 #  pages/2_🖼️_Image_Detection.py
 #  AI Image Detector — EfficientNetV2-B3
 #
-#  Training notebook facts (ai-vs-real-images.ipynb):
-#    Architecture : EfficientNetV2-B3 (ImageNet) + GAP + BN +
-#                   Dense(512,relu) + Dropout(0.4) +
-#                   Dense(256,relu) + Dropout(0.3) + Dense(1,sigmoid)
-#    Input size   : 224 x 224 x 3
-#    Preprocessing: float32 in [0, 255]  — DO NOT divide by 255
-#                   include_preprocessing=True handles normalisation internally
-#    Labels       : 0 = Real Photo  |  1 = AI Generated
-#    Decision     : score >= 0.5 -> AI Generated
-#                   score <  0.5 -> Real Photo
-#    Saved as     : cnn_detection.h5  (full model)
+#  Training facts (ai-vs-real-images.ipynb):
+#    Input  : 224x224x3, float32 [0,255] — DO NOT /255
+#             include_preprocessing=True normalises inside backbone
+#    Output : sigmoid scalar — 0=Real, 1=AI Generated
+#    Rule   : score >= 0.5 -> AI Generated | score < 0.5 -> Real Photo
 #
-#  Secrets (Streamlit Cloud -> App Settings -> Secrets):
+#  Secret:
 #    [gdrive]
-#    cnn_detection = "YOUR_GOOGLE_DRIVE_FILE_ID"
+#    cnn_detection = "GOOGLE_DRIVE_FILE_ID"
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -36,109 +30,92 @@ st.set_page_config(
 from utils import inject_css, result_card_html
 inject_css()
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+IMG_SIZE       = (224, 224)
 MODEL_FILENAME = "cnn_detection.h5"
-IMG_SIZE = (224, 224)
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-def _get_file_id() -> str:
-    gdrive = st.secrets.get("gdrive", {})
-    fid = gdrive.get("cnn_detection", "").strip()
-    if not fid:
-        fid = st.secrets.get("cnn_detection", "").strip()
-    return fid
+# ─────────────────────────────────────────────────────────────────────────────
+#  MODEL — downloaded once, loaded once, reused forever
+#  @st.cache_resource ensures the model object lives in memory for the entire
+#  app lifetime. Streamlit only calls this function once; every page visit and
+#  every image upload reuses the same object.
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner="Loading EfficientNet model... (first visit only)")
+def get_model():
+    # ── Step 1: download if not already on disk ──────────────────────────────
+    if not (os.path.exists(MODEL_FILENAME) and os.path.getsize(MODEL_FILENAME) > 1_000_000):
+        gdrive  = st.secrets.get("gdrive", {})
+        file_id = gdrive.get("cnn_detection", "").strip()
+        if not file_id:
+            file_id = st.secrets.get("cnn_detection", "").strip()
 
+        if not file_id:
+            st.error(
+                "Drive secret not found. Add to Streamlit Secrets:\n\n"
+                "```toml\n[gdrive]\ncnn_detection = \"YOUR_FILE_ID\"\n```"
+            )
+            st.stop()
 
-# ── Download (once, cached) ────────────────────────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def _ensure_model_on_disk() -> str:
-    if os.path.exists(MODEL_FILENAME) and os.path.getsize(MODEL_FILENAME) > 1_000_000:
-        return MODEL_FILENAME
+        try:
+            import gdown
+        except ImportError:
+            st.error("`gdown` missing — add `gdown>=5.1.0` to requirements.txt and redeploy.")
+            st.stop()
 
-    file_id = _get_file_id()
-    if not file_id:
-        st.error(
-            "Model file not found and no Drive secret configured.\n\n"
-            "Add this to Streamlit Secrets:\n\n"
-            "```toml\n[gdrive]\ncnn_detection = \"YOUR_FILE_ID\"\n```"
-        )
-        st.stop()
-
-    try:
-        import gdown
-    except ImportError:
-        st.error("`gdown` not installed — add `gdown>=5.1.0` to requirements.txt")
-        st.stop()
-
-    progress = st.progress(0, text="Downloading EfficientNet model from Google Drive...")
-    try:
         gdown.download(
             f"https://drive.google.com/uc?id={file_id}",
             MODEL_FILENAME,
             quiet=False,
         )
-        progress.progress(1.0, text="Download complete!")
-        progress.empty()
-    except Exception as exc:
-        progress.empty()
-        st.error(
-            f"Download failed: {exc}\n\n"
-            "Check the file ID is correct and the file is shared as "
-            "'Anyone with the link can view'."
-        )
-        st.stop()
 
-    if not os.path.exists(MODEL_FILENAME) or os.path.getsize(MODEL_FILENAME) < 1_000_000:
-        st.error("Downloaded file looks corrupt (too small). Re-check the Drive link.")
-        st.stop()
+        if not os.path.exists(MODEL_FILENAME) or os.path.getsize(MODEL_FILENAME) < 1_000_000:
+            st.error(
+                "Download produced an invalid file. "
+                "Check the file ID and that it is shared as 'Anyone with the link can view'."
+            )
+            st.stop()
 
-    return MODEL_FILENAME
-
-
-# ── Load model (cached) ────────────────────────────────────────────────────────
-@st.cache_resource(show_spinner="Loading EfficientNet model...")
-def _load_model(model_path: str):
+    # ── Step 2: load into memory ─────────────────────────────────────────────
     from tensorflow import keras
-    model = keras.models.load_model(model_path, compile=False)
-    return model
+    return keras.models.load_model(MODEL_FILENAME, compile=False)
 
 
-# ── Preprocessing — must match training exactly ────────────────────────────────
-def _preprocess(pil_img: PILImage.Image) -> np.ndarray:
-    # Training: tf.image.resize -> tf.cast(float32)  — NO /255
-    # include_preprocessing=True normalises [0,255] -> [-1,1] inside the backbone
+# ─────────────────────────────────────────────────────────────────────────────
+#  INFERENCE HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def preprocess(pil_img: PILImage.Image) -> np.ndarray:
+    """
+    Matches training load_image() exactly:
+      resize to 224x224, cast float32, keep [0,255].
+    DO NOT divide by 255 — backbone uses include_preprocessing=True.
+    """
     img = pil_img.convert("RGB").resize(IMG_SIZE, PILImage.LANCZOS)
-    arr = np.array(img, dtype=np.float32)   # [0.0, 255.0]
+    arr = np.array(img, dtype=np.float32)   # [0.0 .. 255.0]
     return np.expand_dims(arr, axis=0)      # (1, 224, 224, 3)
 
 
-def _predict(model, pil_img: PILImage.Image) -> float:
-    return float(model.predict(_preprocess(pil_img), verbose=0)[0][0])
+def predict(model, pil_img: PILImage.Image) -> float:
+    return float(model.predict(preprocess(pil_img), verbose=0)[0][0])
 
 
-def _interpret(score: float):
-    # score = P(AI-Generated)
+def interpret(score: float):
     if score >= 0.5:
-        label, css_cls = "AI Generated", "ai"
-        conf_pct = int(round(score * 100))
-    else:
-        label, css_cls = "Real Photo", "real"
-        conf_pct = int(round((1.0 - score) * 100))
-    return label, css_cls, conf_pct
+        return "AI Generated", "ai",   int(round(score * 100))
+    return "Real Photo",       "real", int(round((1.0 - score) * 100))
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  UI
+# ─────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🛡️ DeepSentinel")
     st.caption("AI & Deepfake Detection Suite")
 
-# ── Page ───────────────────────────────────────────────────────────────────────
 st.markdown('<div class="hero-title">🖼️ AI Image Detector</div>', unsafe_allow_html=True)
 st.divider()
 
-# Ensure model is ready before the uploader appears
-model_path = _ensure_model_on_disk()
+# Load model once — cached across all sessions and all image uploads
+model = get_model()
 
 if "img_prev" not in st.session_state:
     st.session_state.img_prev = None
@@ -164,21 +141,15 @@ with col_right:
     result_slot = st.empty()
 
     if uploaded:
-        try:
-            model = _load_model(model_path)
-        except Exception as exc:
-            result_slot.error(f"Failed to load model: {exc}")
-            st.stop()
-
-        with st.spinner("Running EfficientNet model..."):
+        with st.spinner("Analysing image..."):
             try:
-                pil = PILImage.open(io.BytesIO(raw))
-                score = _predict(model, pil)
+                pil   = PILImage.open(io.BytesIO(raw))
+                score = predict(model, pil)
             except Exception as exc:
                 result_slot.error(f"Inference failed: {exc}")
                 st.stop()
 
-        label, css_cls, conf_pct = _interpret(score)
+        label, css_cls, conf_pct = interpret(score)
         result_slot.markdown(
             result_card_html(
                 label, css_cls, conf_pct, score,
