@@ -15,7 +15,6 @@
 import os
 import io
 
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import numpy as np
@@ -28,7 +27,7 @@ st.set_page_config(
     layout="wide",
 )
 
-from utils import inject_css, result_card_html, ensure_file
+from utils import inject_css, result_card_html, ensure_file, load_keras_model
 inject_css()
 
 IMG_SIZE       = (224, 224)
@@ -45,8 +44,9 @@ MODEL_FILENAME = "cnn_detection.h5"
 @st.cache_resource(show_spinner="Loading EfficientNet model... (first visit only)")
 def get_model():
     path = ensure_file(MODEL_FILENAME)          # downloads once if missing
-    from tensorflow import keras
-    return keras.models.load_model(path, compile=False)
+    # Keras 3 first (this model was saved with Keras 3 → uses `batch_shape`),
+    # falling back to legacy Keras 2 if needed.
+    return load_keras_model(path, compile=False)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
