@@ -1,26 +1,7 @@
 # # ─────────────────────────────────────────────────────────────────────────────
 # #  DeepSentinel — Combined AI / Deepfake Detection Suite
 # #  Tabs: Text · Image · Video · Audio
-# #
-# #  DEPLOYMENT NOTE:
-# #  Model weights are NOT stored in this repo (too large for GitHub).
-# #  They are downloaded automatically from Google Drive on first run.
-# #  Add your Drive file IDs in Streamlit Cloud → App Settings → Secrets:
-# #
-# #  [gdrive]
-# #  lstm_main            = "YOUR_FILE_ID"
-# #  tokenizer            = "YOUR_FILE_ID"
-# #  lstm_kfold           = "YOUR_FILE_ID"
-# #  tokenizer_kfold      = "YOUR_FILE_ID"
-# #  effnet               = "YOUR_FILE_ID"
-# #  effnet_art           = "YOUR_FILE_ID"
-# #  cnn_weights          = "YOUR_FILE_ID"
-# #  audio_model          = "YOUR_FILE_ID"
-# #  vid_97_100           = "YOUR_FILE_ID"
-# #  vid_97_80            = "YOUR_FILE_ID"
-# #  vid_97_60            = "YOUR_FILE_ID"
-# #  vid_95_40            = "YOUR_FILE_ID"
-# #  vid_93_100           = "YOUR_FILE_ID"
+
 # # ─────────────────────────────────────────────────────────────────────────────
 # import os
 # import io
@@ -858,11 +839,17 @@
 
 
 
-# app.py — DeepSentinel Landing Page
+# ─────────────────────────────────────────────────────────────────────────────
+#  app.py — DeepSentinel Landing Page
+#  Streamlit multi-page app entry point.
+#  Heavy models load only in their own page — NOTHING is downloaded here.
+# ─────────────────────────────────────────────────────────────────────────────
 import os
-import streamlit as st
 
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+import streamlit as st
 
 st.set_page_config(
     page_title="DeepSentinel · AI Detection Suite",
@@ -871,10 +858,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-from utils import inject_css, download_models
+from utils import inject_css
 
 inject_css()
-download_models()
+
+# NOTE: download_models() has been REMOVED.
+# Previously this pulled all ~10 weight files (incl. five large video .pt models)
+# on the landing page, which exhausted memory/disk/time and put the app into a
+# crash → restart → re-download loop. Each model is now fetched lazily, once,
+# inside its own page via utils.ensure_file().
 
 st.markdown('<div class="hero-title">🛡️ DeepSentinel</div>', unsafe_allow_html=True)
 st.markdown('<div class="hero-sub">AI &amp; Deepfake Detection Suite &nbsp;·&nbsp; Text · Image · Video · Audio</div>', unsafe_allow_html=True)
@@ -888,15 +880,18 @@ st.markdown("""
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🖼️ Image Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">EfficientNetB3</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">CNN · EfficientNetB3 · EfficientNet Art</div>
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🎬 Video Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">ResNeXt50 + LSTM · face-aware</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">ResNeXt50 + LSTM · face-aware · ensemble</div>
 </div>
 <div style="background:#0e0f1a;border:1px solid #1c1d30;border-radius:14px;padding:1.4rem 1.6rem;">
     <div style="font-size:1.3rem;font-weight:700;color:#d0d1e8;margin-bottom:0.4rem;">🎙️ Audio Detection</div>
-    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">Mel spectrogram CNN</div>
+    <div style="font-family:'DM Mono',monospace;font-size:0.68rem;color:#44456a;line-height:1.7;">Mel spectrogram CNN · WAV MP3 FLAC OGG</div>
 </div>
 </div>
 """, unsafe_allow_html=True)
+
+st.divider()
+st.caption("Use the sidebar to navigate between detectors. Each model downloads automatically from Google Drive on first visit to its page, then is cached for the rest of the session.")
