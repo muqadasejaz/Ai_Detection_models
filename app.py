@@ -839,6 +839,7 @@
 
 
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  app.py — DeepSentinel Landing Page
 #  Streamlit multi-page app entry point.
@@ -846,7 +847,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 import os
 
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import streamlit as st
@@ -895,3 +895,4 @@ st.markdown("""
 
 st.divider()
 st.caption("Use the sidebar to navigate between detectors. Each model downloads automatically from Google Drive on first visit to its page, then is cached for the rest of the session.")
+
