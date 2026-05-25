@@ -31,21 +31,21 @@ from utils import inject_css, result_card_html, ensure_file, load_keras_model
 inject_css()
 
 IMG_SIZE       = (224, 224)
-# FIX: must match the key in utils.DRIVE_FILES ("cnn_detection.h5") so the file
-# is downloaded exactly once instead of once here + once by the old downloader.
 MODEL_FILENAME = "cnn_detection.h5"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  MODEL — downloaded once (via ensure_file), loaded once, reused forever.
-#  @st.cache_resource keeps the model object in memory for the app lifetime;
-#  every page visit and every upload reuses the same object.
+#  @st.cache_resource keeps the model object in memory for the app lifetime.
+#
+#  FIX: get_model() is NOT called at module level. It is called only inside
+#  the upload handler below. This prevents TensorFlow + Keras from
+#  initialising (and consuming ~1 GB RAM) before any user uploads an image,
+#  which was causing an OOM → segfault on Streamlit Cloud's free tier.
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading EfficientNet model... (first visit only)")
 def get_model():
-    path = ensure_file(MODEL_FILENAME)          # downloads once if missing
-    # Keras 3 first (this model was saved with Keras 3 → uses `batch_shape`),
-    # falling back to legacy Keras 2 if needed.
+    path = ensure_file(MODEL_FILENAME)
     return load_keras_model(path, compile=False)
 
 
@@ -83,9 +83,6 @@ with st.sidebar:
 st.markdown('<div class="hero-title">🖼️ AI Image Detector</div>', unsafe_allow_html=True)
 st.divider()
 
-# Load model once — cached across all sessions and all image uploads
-model = get_model()
-
 if "img_prev" not in st.session_state:
     st.session_state.img_prev = None
 
@@ -113,6 +110,10 @@ with col_right:
     if uploaded and raw is not None:
         with st.spinner("Analysing image..."):
             try:
+                # FIX: model is loaded here (lazily) not at module level.
+                # @st.cache_resource ensures it only loads once per app lifetime
+                # and is reused on every subsequent upload — no performance cost.
+                model = get_model()
                 pil   = PILImage.open(io.BytesIO(raw))
                 score = predict(model, pil)
             except Exception as exc:
