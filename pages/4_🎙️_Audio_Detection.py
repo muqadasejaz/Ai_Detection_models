@@ -134,7 +134,13 @@
 import os
 import tempfile
 
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+# FIX: TF_USE_LEGACY_KERAS has been removed.
+# Setting it here is too late — TensorFlow has already been imported by the
+# time this page loads (other pages in the same process imported it first).
+# Env vars that control TF backend selection must be set before ANY TF import.
+# Instead, we use `from tensorflow import keras` directly in load_audio_model()
+# below, which always gives us the TF-bundled Keras 2 regardless of what
+# standalone Keras 3 is doing. This is consistent and version-safe.
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import numpy as np
@@ -162,10 +168,12 @@ AUD_MAX_S  = 60.0
 # ── Model loaders & helpers ───────────────────────────────────────────────────
 @st.cache_resource(show_spinner="Loading audio model…")
 def load_audio_model(path):
-    # Use the legacy (Keras 2) backend bundled with tensorflow so the .h5 loads
-    # under TF 2.20. Standalone `import keras` would give Keras 3.
+    # FIX: use `from tensorflow import keras` instead of standalone `import keras`.
+    # This gives us the Keras 2 implementation bundled with TensorFlow, which is
+    # what saved this model. It works regardless of page load order and does not
+    # depend on TF_USE_LEGACY_KERAS being set before import time.
     from tensorflow import keras
-    return keras.models.load_model(ensure_file(path))   # download once on first use
+    return keras.models.load_model(ensure_file(path))
 
 def audio_features(fp):
     import librosa
@@ -174,8 +182,6 @@ def audio_features(fp):
     mel  = librosa.feature.melspectrogram(y=audio, sr=sr, n_mels=AUD_MELS)
     mdb  = librosa.power_to_db(mel, ref=np.max)
     if mdb.shape[1] < AUD_FRAMES:
-        # FIX: was mode="reflect", which raises on clips shorter than ~2 frames.
-        # Pad the silence floor (min dB) with constant padding instead.
         mdb_f = np.pad(
             mdb, ((0, 0), (0, AUD_FRAMES - mdb.shape[1])),
             mode="constant", constant_values=float(mdb.min()),
@@ -261,5 +267,3 @@ if uaud:
         st.error(f"Analysis failed: {e}"); st.exception(e)
     finally:
         if os.path.exists(tp): os.unlink(tp)
-
-
