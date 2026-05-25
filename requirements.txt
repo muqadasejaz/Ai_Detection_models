@@ -16,9 +16,13 @@ openai>=1.0.0
 # ── Image detection ───────────────────────────────────────────────────────────
 Pillow>=10.0.0
 
-# ── Video detection (ResNeXt50 + LSTM) ───────────────────────────────────────
-torch>=2.0.0
-torchvision>=0.15.0
+# ── Video detection (ResNeXt50 + LSTM) ────────────────────────────────────────
+# CPU-only torch — Streamlit Cloud has no GPU.
+# This avoids pulling in ~4 GB of NVIDIA CUDA libs (cublas, cudnn, etc.)
+# that would otherwise load into memory and cause OOM → segfault.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
 opencv-python-headless>=4.8.0
 
 # ── Audio detection ───────────────────────────────────────────────────────────
