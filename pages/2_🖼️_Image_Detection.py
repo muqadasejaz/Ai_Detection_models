@@ -130,6 +130,9 @@
 #         )
 
 
+
+}
+
 """
 AI Image Detector — Phase 1 (metadata) + Phase 2 (CNN visual pass)
 """
@@ -156,7 +159,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────
 # SHARED CSS + Keras loader from utils
 # ─────────────────────────────────────────────────────────────────
-from utils import inject_css, load_keras_model   # ← added
+from utils import inject_css, load_keras_model, ensure_file   # ← added
 inject_css()                                      # ← added
 
 # ─────────────────────────────────────────────────────────────────
@@ -478,10 +481,10 @@ MODEL_PATH = Path(__file__).parent / "cnn_detection.h5"
 
 @st.cache_resource(show_spinner="Loading CNN model...")
 def load_model():
-    # load_keras_model() (from utils) tries Keras 3 first, falls back to
-    # tf-keras (Keras 2) automatically — handles the mixed-version save formats
-    # used across this project.
-    return load_keras_model(str(MODEL_PATH), compile=False)  # ← was tf.keras.models.load_model
+    # ensure_file() downloads cnn_detection.h5 from Google Drive on first use.
+    # load_keras_model() then handles the Keras 2/3 version mismatch.
+    ensure_file("cnn_detection.h5")
+    return load_keras_model(str(MODEL_PATH), compile=False)
 
 
 def run_phase2(img: Image.Image):
