@@ -155,10 +155,10 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────
-# SHARED CSS + Keras loader from utils
+# SHARED HELPERS
 # ─────────────────────────────────────────────────────────────────
-from utils import inject_css, load_keras_model, ensure_file   # ← added
-inject_css()                                      # ← added
+from utils import inject_css, ensure_file, load_keras_model
+inject_css()
 
 # ─────────────────────────────────────────────────────────────────
 # CUSTOM CSS
@@ -176,7 +176,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     background: #141414;
 }
 
-/* ── Verdict banner — AI found (green pill like Vynly) ── */
 .verdict-ai {
     display: inline-flex; align-items: center; gap: 10px;
     background: #052e16; border: 1px solid #166534;
@@ -189,7 +188,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     padding-left: 10px; border-left: 1px solid #166534;
 }
 
-/* ── Verdict banner — clean (grey) ── */
 .verdict-clean {
     display: inline-flex; align-items: center; gap: 10px;
     background: #141414; border: 1px solid #2a2a2a;
@@ -197,7 +195,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 }
 .verdict-clean .title { color: #6b7280; font-weight: 600; font-size: 14px; }
 
-/* ── Verdict banner — model prediction (blue tint) ── */
 .verdict-model {
     display: inline-flex; align-items: center; gap: 10px;
     background: #0a1628; border: 1px solid #1e3a5f;
@@ -210,7 +207,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     padding-left: 10px; border-left: 1px solid #1e3a5f;
 }
 
-/* ── Evidence block ── */
 .evidence-header {
     font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
     color: #4b5563; text-transform: uppercase;
@@ -238,16 +234,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     font-family: 'Courier New', monospace;
 }
 
-/* ── Vision pass clean items ── */
-.vp-subline { font-size: 13px; color: #4b5563; margin: 14px 0 10px; }
-.vp-block { margin: 4px 0 16px; padding: 0; }
-.vp-item {
-    font-size: 13px; color: #374151; padding: 3px 0;
-    display: flex; align-items: center; gap: 8px;
-}
-.vp-item::before { content: "·"; color: #374151; font-size: 20px; line-height:1; flex-shrink:0; }
-
-/* ── "What this does NOT mean" block ── */
 .notmean-block {
     background: #0d0d0d; border: 1px solid #1e1e1e;
     border-left: 3px solid #27272a;
@@ -260,13 +246,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     display: block; margin-bottom: 10px;
 }
 
-/* ── File meta ── */
-.file-meta {
-    text-align: center; font-size: 12px; color: #374151;
-    margin-top: 6px;
-}
-
-/* ── Info box ── */
 .info-box {
     background: #0f0f0f; border: 1px solid #1a1a1a;
     border-radius: 12px; padding: 20px 24px; margin-top: 32px;
@@ -304,8 +283,6 @@ AI_XMP_VALUES = [
 C2PA_SIGNATURES = [b"c2pa", b"jumb", b"JUMB", b"jumd"]
 C2PA_MARKERS    = [b"c2pa.org", b"contentauthenticity", b"cai.adobe.com",
                    b"c2patool", b"TrustedAlgorithmicMedia"]
-
-Evidence = dict
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -475,37 +452,34 @@ def run_phase1(img, raw, fmt):
 # ─────────────────────────────────────────────────────────────────
 # PHASE 2 — CNN VISUAL PASS
 # ─────────────────────────────────────────────────────────────────
-MODEL_PATH = Path(__file__).parent / "cnn_detection.h5"
+MODEL_FNAME = "cnn_detection.h5"
+MODEL_PATH  = Path(MODEL_FNAME)   # resolves to CWD, same as ensure_file()
 
-@st.cache_resource(show_spinner="Loading CNN model...")
-def load_model():
-    # ensure_file() downloads cnn_detection.h5 from Google Drive on first use.
-    # load_keras_model() then handles the Keras 2/3 version mismatch.
-    ensure_file("cnn_detection.h5")
+
+@st.cache_resource(show_spinner="Downloading & loading CNN model…")
+def load_cnn_model():
+    """Download once from Google Drive (via ensure_file), load once via load_keras_model."""
+    ensure_file(MODEL_FNAME)                               # download if not on disk
     return load_keras_model(str(MODEL_PATH), compile=False)
 
 
 def run_phase2(img: Image.Image):
     """
     Matches notebook inference exactly:
-      img.convert(RGB).resize((224,224), LANCZOS) → float32 [0,255] → predict
+      img → RGB → resize(224,224) LANCZOS → float32 [0,255] → predict
       prob >= 0.5  →  AI-Generated
       prob <  0.5  →  Real
     DO NOT divide by 255 — EfficientNetV2B3 include_preprocessing=True
     handles normalisation internally.
     """
-    if not MODEL_PATH.exists():
-        return {"prob": None, "label": "unavailable", "conf_pct": None,
-                "details": ["model file cnn_detection.h5 not found"]}
     try:
-        model = load_model()
-        arr  = np.expand_dims(
+        model = load_cnn_model()
+        arr   = np.expand_dims(
             np.array(img.convert("RGB").resize((224, 224), Image.LANCZOS), dtype=np.float32),
             axis=0,
-        )  # shape (1,224,224,3), values [0,255] — no /255
+        )  # shape (1,224,224,3), values [0,255]
         prob = float(model.predict(arr, verbose=0)[0][0])
 
-        # Exactly as notebook: >= 0.5 → FAKE(AI), < 0.5 → REAL
         if prob >= 0.5:
             label    = "AI-Generated"
             conf_pct = int(round(prob * 100))
@@ -515,8 +489,7 @@ def run_phase2(img: Image.Image):
 
         return {"prob": prob, "label": label, "conf_pct": conf_pct, "details": []}
     except Exception as e:
-        return {"prob": None, "label": "error", "conf_pct": None,
-                "details": [str(e)]}
+        return {"prob": None, "label": "error", "conf_pct": None, "details": [str(e)]}
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -557,7 +530,6 @@ def render_clean_verdict(p2):
     conf_pct = p2.get("conf_pct")
     label    = p2.get("label", "")
 
-    # ── Pill 1: No Provenance Metadata ───────────────────────────
     st.markdown(
         '<div class="verdict-clean">'
         '<span class="title">No provenance metadata</span>'
@@ -565,23 +537,23 @@ def render_clean_verdict(p2):
         unsafe_allow_html=True,
     )
 
-    # ── Pill 2: Model prediction ──────────────────────────────────
     if prob is None:
+        err = p2.get("details", ["unknown error"])[0]
         st.markdown(
-            '<div class="verdict-model">'
-            '<span class="icon">◦</span>'
-            '<span class="title">Model predict: unavailable</span>'
-            '<span class="sub">place cnn_detection.h5 next to app.py</span>'
-            '</div>',
+            f'<div class="verdict-model">'
+            f'<span class="icon">◦</span>'
+            f'<span class="title">Model predict: unavailable</span>'
+            f'<span class="sub">{err}</span>'
+            f'</div>',
             unsafe_allow_html=True,
         )
     else:
-        raw_str  = f"raw score: {prob:.4f}"
-        if label == "AI-Generated":
-            sub_str = f"P(AI-Generated) = {conf_pct}% · {raw_str}"
-        else:
-            sub_str = f"P(Real) = {conf_pct}% · {raw_str}"
-
+        raw_str = f"raw score: {prob:.4f}"
+        sub_str = (
+            f"P(AI-Generated) = {conf_pct}% · {raw_str}"
+            if label == "AI-Generated"
+            else f"P(Real) = {conf_pct}% · {raw_str}"
+        )
         st.markdown(
             f'<div class="verdict-model">'
             f'<span class="icon">◎</span>'
@@ -591,7 +563,6 @@ def render_clean_verdict(p2):
             unsafe_allow_html=True,
         )
 
-    # ── Disclaimer ───────────────────────────────────────────────
     st.markdown(
         '<div class="notmean-block">'
         '<strong>What this does NOT mean</strong>'
@@ -603,7 +574,7 @@ def render_clean_verdict(p2):
         'embedded provenance, it&#39;s almost certainly gone by the time the image lands '
         'in your feed.<br><br>'
         'The model prediction is a heuristic signal, not a cryptographic proof. '
-        'weight it accordingly.'
+        'Weight it accordingly.'
         '</div>',
         unsafe_allow_html=True,
     )
@@ -619,7 +590,7 @@ st.markdown("""
     🔍 AI Image Detector
   </div>
   <div style="font-size:14px;color:#4b5563;margin-top:8px">
-    cryptographic metadata , visual classifier
+    cryptographic metadata · visual classifier
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -670,15 +641,10 @@ if uploaded:
       Runway, Imagen, Stable Diffusion, ComfyUI, A1111.</li>
   <li><strong>PNG text chunks</strong> — A1111's <code>parameters</code> key,
       ComfyUI's <code>workflow</code> JSON.</li>
-  <li><strong>Visible watermarks</strong> (vision pass, runs only when byte-level pass finds nothing)
-      — Gemini's corner mark, DALL-E rainbow corner, Sora / Midjourney / Imagen / Firefly
-      content-credentials icon, and any visible "Made with AI" / generator overlay text.</li>
 </ul>
 <p>Two passes. The metadata pass is cryptographic — if it returns a hit, we can stand behind
-it. The visual pass uses an AI vision model and is heuristic — we surface its confidence
-(low / medium / high) so you can weight it accordingly. We deliberately do not ship a
-vibes-based pixel classifier that confidently mislabels human work as AI; if we can't see
-a watermark or read metadata, we say so.</p>
+it. The visual pass uses a CNN and is heuristic — we surface its confidence so you can
+weight it accordingly.</p>
 </div>
 """, unsafe_allow_html=True)
 
