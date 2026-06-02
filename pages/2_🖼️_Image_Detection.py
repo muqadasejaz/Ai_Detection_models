@@ -131,8 +131,6 @@
 
 
 
-}
-
 """
 AI Image Detector — Phase 1 (metadata) + Phase 2 (CNN visual pass)
 """
