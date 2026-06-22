@@ -18,7 +18,7 @@ inject_css()
 import torch
 import torch.nn as nn
 import torch.nn.functional as VF
-from torchvision import models as tv_models, transforms as tv_transforms
+from torchvision import models as tv_models
 import cv2
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -52,16 +52,19 @@ class _VideoModel(nn.Module):
         x_lstm, _ = self.lstm(x, None)
         return fmap, self.dp(self.linear1(torch.mean(x_lstm, dim=1)))
 
-VID_IM_SIZE   = 112
+VID_IM_SIZE = 112
 
-# FIX: ToTensor() expects a PIL Image — ToPILImage() + Resize() removed from
-# pipeline because _extract_vid_frames already builds a resized PIL Image (pil)
-# and now passes that directly. Keeping ToPILImage() here caused a mode_to_nptype
-# lookup failure in newer torchvision when ToTensor() received the result.
-VID_TRANSFORM = tv_transforms.Compose([
-    tv_transforms.ToTensor(),
-    tv_transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-])
+# FIX: torchvision 0.16 ToTensor() crashes on certain PIL modes via mode_to_nptype.
+# We bypass torchvision entirely and convert manually — fully version-safe.
+_NORM_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+_NORM_STD  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+
+def _pil_to_tensor(pil_img):
+    """Version-safe PIL Image → normalised float32 tensor (3, H, W).
+    Replaces torchvision ToTensor() + Normalize() to avoid mode_to_nptype crash."""
+    arr = np.array(pil_img.convert("RGB"), dtype=np.float32) / 255.0  # H,W,3  [0,1]
+    t   = torch.from_numpy(arr).permute(2, 0, 1)                       # 3,H,W
+    return (t - _NORM_MEAN) / _NORM_STD                                # normalised
 
 VID_MODELS_AVAILABLE = {
     "97% acc · 100 frames · FF"       : ("model_97_acc_100_frames_FF_data.pt",        100),
@@ -76,7 +79,7 @@ VID_MODELS_AVAILABLE = {
 def _load_vid_model(model_filename, model_dir):
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_path = os.path.join(model_dir, model_filename)
-    # FIX: download from Google Drive on first use (no-op if already on disk)
+    # Download from Google Drive on first use (no-op if already on disk)
     ensure_file(model_filename)
     m = _VideoModel(num_classes=2)
     m.load_state_dict(torch.load(model_path, map_location=device))
@@ -109,11 +112,10 @@ def _extract_vid_frames(video_path, sequence_length):
         if not ret: continue
         face = _detect_and_crop_face(frame)
         rgb  = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
-        # pil is resized to VID_IM_SIZE here — passed directly to VID_TRANSFORM
-        # FIX: pass pil (PIL Image) instead of rgb (numpy array) to avoid
-        # torchvision mode_to_nptype crash in ToTensor()
-        pil  = PILImage.fromarray(rgb).resize((VID_IM_SIZE, VID_IM_SIZE))
-        tensors.append(VID_TRANSFORM(pil))
+        pil  = PILImage.fromarray(rgb).resize((VID_IM_SIZE, VID_IM_SIZE), PILImage.LANCZOS)
+        # FIX: use _pil_to_tensor() instead of torchvision VID_TRANSFORM to
+        # avoid mode_to_nptype crash in torchvision 0.16 ToTensor()
+        tensors.append(_pil_to_tensor(pil))
         display_frames.append((idx / fps, pil))
     cap.release()
     if not tensors: return None, []
