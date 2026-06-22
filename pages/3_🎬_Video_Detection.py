@@ -12,7 +12,7 @@ from PIL import Image as PILImage
 
 st.set_page_config(page_title="Video Detection · DeepSentinel", page_icon="🎬", layout="wide")
 
-from utils import inject_css, result_card_html
+from utils import inject_css, result_card_html, ensure_file
 inject_css()
 
 import torch
@@ -72,8 +72,8 @@ VID_MODELS_AVAILABLE = {
 def _load_vid_model(model_filename, model_dir):
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_path = os.path.join(model_dir, model_filename)
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Video model not found: {model_path}")
+    # Download from Google Drive on first use (no-op if already on disk)
+    ensure_file(model_filename)
     m = _VideoModel(num_classes=2)
     m.load_state_dict(torch.load(model_path, map_location=device))
     m.to(device).eval()
