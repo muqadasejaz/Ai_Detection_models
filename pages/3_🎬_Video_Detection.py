@@ -206,7 +206,7 @@ if uvid and vid_analyze_btn:
         is_fake    = fake_votes >= real_votes if vid_run_all else (all_results[0][1] == 0)
         avg_fake   = float(np.mean([fp for _,_,fp,_ in all_results]))
         avg_real   = float(np.mean([rp for _,_,_,rp in all_results]))
-        verdict    = "DEEPFAKE"  if is_fake else "AUTHENTIC"
+        verdict    = "AI Generaed"  if is_fake else "Real"
         css_cls    = "fake"      if is_fake else "real"
         conf_pct   = int(avg_fake*100) if is_fake else int(avg_real*100)
 
