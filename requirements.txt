@@ -1,30 +1,20 @@
 # ── Core ──────────────────────────────────────────────────────────────────────
-numpy>=1.26.0,<2.1.0
+numpy>=1.26.0,<2.0.0
 streamlit>=1.40.0
-
 # ── Model downloader (Google Drive) ───────────────────────────────────────────
 gdown>=5.1.0
-
 # ── Text / Image / Audio detection (TensorFlow + BOTH Keras backends) ─────────
-# Models were saved with mixed Keras versions, so we keep both available and let
-# utils.load_keras_model() pick the right one. TF_USE_LEGACY_KERAS is NOT set.
 tensorflow==2.20.0
-keras>=3.7.0       # Keras 3 — loads the image CNN (uses `batch_shape`)
-tf-keras>=2.17.0   # Keras 2 fallback — loads the text LSTMs / Tokenizer pickle
+keras>=3.7.0
+tf-keras>=2.17.0
 openai>=1.0.0
-
 # ── Image detection ───────────────────────────────────────────────────────────
 Pillow>=10.0.0
-
 # ── Video detection (ResNeXt50 + LSTM) ────────────────────────────────────────
-# CPU-only torch — Streamlit Cloud has no GPU.
-# This avoids pulling in ~4 GB of NVIDIA CUDA libs (cublas, cudnn, etc.)
-# that would otherwise load into memory and cause OOM → segfault.
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.1.0+cpu
 torchvision==0.16.0+cpu
 opencv-python-headless>=4.8.0
-
 # ── Audio detection ───────────────────────────────────────────────────────────
 librosa>=0.10.0
 matplotlib>=3.7.0
