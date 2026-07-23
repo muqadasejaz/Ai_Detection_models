@@ -281,508 +281,16 @@
 
 
 
-# # ─────────────────────────────────────────────────────────────────────────────
-# #  pages/3_🎬_Video_Detection.py
-# #  Deepfake Video Detector
-# #  Phase 1: C2PA manifest + SynthID text-marker provenance check (structural,
-# #           no ML — parses ISOBMFF boxes directly from the video file).
-# #  Phase 2: ResNeXt50 + LSTM visual classifier ("Video Detection Model"),
-# #           only runs if Phase 1 finds no provenance evidence.
-# # ─────────────────────────────────────────────────────────────────────────────
-# import os
-# import math
-# import struct
-# import tempfile
-# import numpy as np
-# import streamlit as st
-# from PIL import Image as PILImage
-
-# st.set_page_config(page_title="Video Detection · DeepSentinel", page_icon="🎬", layout="wide")
-
-# from utils import inject_css, result_card_html, ensure_file
-# inject_css()
-
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as VF
-# from torchvision import models as tv_models
-# import cv2
-
-# # ── Sidebar ───────────────────────────────────────────────────────────────────
-# with st.sidebar:
-#     st.markdown("## 🛡️ DeepSentinel")
-#     st.caption("AI & Deepfake Detection Suite")
-#     st.divider()
-#     st.caption("Model weights download automatically on first use and are cached for the session.")
-
-# # ═════════════════════════════════════════════════════════════════════════════
-# #  PHASE 1 — VIDEO PROVENANCE CHECK (C2PA + SynthID text marker)
-# # ═════════════════════════════════════════════════════════════════════════════
-# #
-# #  Structural parse of the file's top-level ISOBMFF ("box"/"atom") structure,
-# #  looking for a 'uuid' box whose 16-byte identifier matches C2PA's registered
-# #  UUID (per the C2PA spec / AWS MediaConvert's documented embedding format).
-# #  This confirms a C2PA manifest box is present — it does NOT perform full
-# #  cryptographic signature validation (that requires the full C2PA SDK).
-# #
-# #  SynthID detection here is a weaker, best-effort text search for "SynthID"
-# #  mentions inside the video's own metadata atoms, in case a generation tool
-# #  also wrote a plain-text label. This is NOT real watermark verification —
-# #  a hit is a hint worth following up on, a miss just means "no label found."
-# # ─────────────────────────────────────────────────────────────────────────────
-
-# C2PA_UUID = bytes.fromhex("d8fec3d61b0e483c92975828877ec481")
-
-# SYNTHID_TEXT_MARKERS = [b"synthid", b"SynthID"]
-# KNOWN_AI_VIDEO_TOOLS = [
-#     b"veo", b"sora", b"runway", b"pika", b"luma", b"kling",
-#     b"stable video diffusion", b"gen-3", b"gen-2", b"haiper",
-# ]
-
-
-# def _iter_top_level_boxes(f):
-#     """Yields (box_type: bytes, box_size: int, box_start_offset: int) for
-#     each top-level ISOBMFF box, without loading the whole file into memory."""
-#     while True:
-#         header = f.read(8)
-#         if len(header) < 8:
-#             return
-#         size, box_type = struct.unpack(">I4s", header)
-#         start = f.tell() - 8
-
-#         if size == 1:
-#             ext = f.read(8)
-#             if len(ext) < 8:
-#                 return
-#             size = struct.unpack(">Q", ext)[0]
-#             header_len = 16
-#         elif size == 0:
-#             remaining = f.seek(0, 2) - start
-#             f.seek(start + 8)
-#             size = remaining
-#             header_len = 8
-#         else:
-#             header_len = 8
-
-#         yield box_type, size, start
-
-#         next_pos = start + size
-#         if size < header_len or next_pos <= start:
-#             return  # malformed box, stop rather than loop forever
-#         f.seek(next_pos)
-
-
-# def check_c2pa_video(video_path: str) -> dict:
-#     """Scans top-level ISOBMFF boxes for a 'uuid' box matching C2PA's
-#     registered identifier."""
-#     hits = []
-#     try:
-#         with open(video_path, "rb") as f:
-#             is_isobmff = False
-#             for box_type, size, start in _iter_top_level_boxes(f):
-#                 if box_type == b"ftyp":
-#                     is_isobmff = True
-
-#                 if box_type == b"uuid":
-#                     f.seek(start + 8)
-#                     uuid_bytes = f.read(16)
-#                     if uuid_bytes == C2PA_UUID:
-#                         f.seek(start + 8 + 16 + 4)  # skip 4 reserved bytes
-#                         purpose = b""
-#                         for _ in range(32):
-#                             b = f.read(1)
-#                             if not b or b == b"\x00":
-#                                 break
-#                             purpose += b
-#                         hits.append({
-#                             "tag": "C2PA", "tag_class": "tag-c2pa",
-#                             "label": "C2PA manifest box (ISOBMFF)",
-#                             "text": f"C2PA UUID box found, purpose={purpose.decode('utf-8', errors='replace') or 'unknown'}",
-#                         })
-#                     f.seek(start + size)
-
-#             if not is_isobmff:
-#                 return {"applicable": False, "hits": [], "note": "Not a recognized ISOBMFF (MP4/MOV) container — skipped."}
-
-#     except (OSError, struct.error) as e:
-#         return {"applicable": False, "hits": [], "note": f"Could not parse file structure: {e}"}
-
-#     return {"applicable": True, "hits": hits}
-
-
-# def check_synthid_text_marker(video_path: str, scan_bytes: int = 20_000_000) -> dict:
-#     """Best-effort text search for 'SynthID' or known AI video-tool names.
-#     NOT real watermark detection — see module note above."""
-#     hits = []
-#     try:
-#         with open(video_path, "rb") as f:
-#             data = f.read(scan_bytes)
-#     except OSError as e:
-#         return {"hits": [], "note": f"Could not read file: {e}"}
-
-#     lower = data.lower()
-#     for marker in SYNTHID_TEXT_MARKERS:
-#         if marker.lower() in lower:
-#             hits.append({
-#                 "tag": "SYNTHID", "tag_class": "tag-synthid",
-#                 "label": "SynthID text mention",
-#                 "text": "'SynthID' appears in the file's own bytes/metadata — text label hint, not a verified watermark check.",
-#             })
-#             break
-
-#     for tool in KNOWN_AI_VIDEO_TOOLS:
-#         if tool in lower:
-#             hits.append({
-#                 "tag": "TOOL", "tag_class": "tag-tool",
-#                 "label": "AI video tool mention",
-#                 "text": f"Metadata mentions a known AI video generation tool: {tool.decode()}",
-#             })
-#             break
-
-#     return {"hits": hits}
-
-
-# def run_phase1_video(video_path: str) -> dict:
-#     """Combined Phase 1 video provenance check. Returns a flat evidence list —
-#     the 'tag' field distinguishes strong (C2PA) vs weak (text marker) signals."""
-#     c2pa_result = check_c2pa_video(video_path)
-#     synthid_result = check_synthid_text_marker(video_path)
-#     evidence = list(c2pa_result.get("hits", [])) + list(synthid_result.get("hits", []))
-#     return {
-#         "evidence": evidence,
-#         "container_recognized": c2pa_result.get("applicable", False),
-#         "note": c2pa_result.get("note"),
-#     }
-
-
-# # ── Phase 1 rendering ────────────────────────────────────────────────────────
-# st.markdown("""
-# <style>
-# .verdict-ai-vid {
-#     display: inline-flex; align-items: center; gap: 10px;
-#     background: #052e16; border: 1px solid #166534;
-#     border-radius: 999px; padding: 9px 20px; margin: 20px 0 0;
-# }
-# .verdict-ai-vid .check { color: #4ade80; font-size: 15px; }
-# .verdict-ai-vid .title { color: #4ade80; font-weight: 600; font-size: 14px; }
-# .verdict-clean-vid {
-#     display: inline-flex; align-items: center; gap: 10px;
-#     background: #141414; border: 1px solid #2a2a2a;
-#     border-radius: 999px; padding: 9px 20px; margin: 20px 0 0;
-# }
-# .verdict-clean-vid .title { color: #6b7280; font-weight: 600; font-size: 14px; }
-# .evidence-header-vid {
-#     font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
-#     color: #4b5563; text-transform: uppercase; margin: 18px 0 8px;
-# }
-# .ev-row-vid {
-#     display: flex; align-items: center; gap: 10px;
-#     padding: 10px 0; border-bottom: 1px solid #1a1a1a;
-# }
-# .ev-row-vid:last-child { border-bottom: none; }
-# .ev-tag-vid {
-#     font-size: 9px; font-weight: 700; letter-spacing: 0.07em;
-#     padding: 3px 8px; border-radius: 4px; flex-shrink: 0; text-transform: uppercase;
-# }
-# .tag-c2pa    { background:#1c1007; color:#fdba74; border:1px solid #92400e; }
-# .tag-synthid { background:#042f2e; color:#5eead4; border:1px solid #134e4a; }
-# .tag-tool    { background:#0f172a; color:#93c5fd; border:1px solid #1e3a8a; }
-# .ev-text-vid {
-#     font-size: 12.5px; color: #9ca3af;
-#     background: #1a1a1a; border: 1px solid #272727;
-#     border-radius: 5px; padding: 2px 8px; font-family: 'Courier New', monospace;
-# }
-# .notmean-block-vid {
-#     background: #0d0d0d; border: 1px solid #1e1e1e; border-left: 3px solid #27272a;
-#     border-radius: 8px; padding: 18px 22px; margin: 16px 0 0;
-#     font-size: 13px; color: #4b5563; line-height: 1.75;
-# }
-# .notmean-block-vid strong {
-#     color: #6b7280; font-size: 11px; text-transform: uppercase;
-#     letter-spacing: 0.06em; display: block; margin-bottom: 10px;
-# }
-# </style>
-# """, unsafe_allow_html=True)
-
-
-# def render_phase1_evidence(evidence):
-#     rows = ""
-#     for ev in evidence:
-#         rows += (
-#             f'<div class="ev-row-vid">'
-#             f'<span class="ev-tag-vid {ev["tag_class"]}">{ev["tag"]}</span>'
-#             f'<span class="ev-text-vid">{ev["text"]}</span>'
-#             f'</div>'
-#         )
-#     st.markdown(
-#         f'<div class="evidence-header-vid">Evidence found</div>'
-#         f'<div style="background:#0d0d0d;border:1px solid #1a1a1a;border-radius:10px;padding:4px 16px">{rows}</div>',
-#         unsafe_allow_html=True,
-#     )
-
-
-# def render_phase1_ai_verdict(evidence):
-#     has_c2pa = any(e["tag"] == "C2PA" for e in evidence)
-#     st.markdown(
-#         '<div class="verdict-ai-vid">'
-#         '<span class="check">✓</span>'
-#         f'<span class="title">{"AI provenance verified" if has_c2pa else "Provenance hint found"}</span>'
-#         '</div>',
-#         unsafe_allow_html=True,
-#     )
-#     render_phase1_evidence(evidence)
-
-
-# def render_phase1_clean_verdict():
-#     st.markdown(
-#         '<div class="verdict-clean-vid"><span class="title">No provenance metadata</span></div>',
-#         unsafe_allow_html=True,
-#     )
-#     st.markdown(
-#         '<div class="notmean-block-vid">'
-#         '<strong>What this does NOT mean</strong>'
-#         '"No provenance metadata" does NOT mean the video is real / human-made. '
-#         'It means the file has no C2PA manifest box or SynthID text label detectable '
-#         'in its own bytes. Re-encoding, re-uploading to social platforms, and screen '
-#         'recording all strip this kind of metadata routinely — so a miss here is common '
-#         'even for genuinely AI-generated video. Running the visual classifier below.'
-#         '</div>',
-#         unsafe_allow_html=True,
-#     )
-
-
-# # ═════════════════════════════════════════════════════════════════════════════
-# #  PHASE 2 — VISUAL CLASSIFIER (single model)
-# # ═════════════════════════════════════════════════════════════════════════════
-
-# class _VideoModel(nn.Module):
-#     def __init__(self, num_classes=2, latent_dim=2048, lstm_layers=1,
-#                  hidden_dim=2048, bidirectional=False):
-#         super().__init__()
-#         backbone   = tv_models.resnext50_32x4d(weights=None)
-#         self.model = nn.Sequential(*list(backbone.children())[:-2])
-#         self.lstm  = nn.LSTM(latent_dim, hidden_dim, lstm_layers, bidirectional)
-#         self.relu  = nn.LeakyReLU()
-#         self.dp    = nn.Dropout(0.4)
-#         self.linear1 = nn.Linear(2048, num_classes)
-#         self.avgpool = nn.AdaptiveAvgPool2d(1)
-
-#     def forward(self, x):
-#         batch_size, seq_length, c, h, w = x.shape
-#         x = x.view(batch_size * seq_length, c, h, w)
-#         fmap = self.model(x)
-#         x    = self.avgpool(fmap)
-#         x    = x.view(batch_size, seq_length, 2048)
-#         x_lstm, _ = self.lstm(x, None)
-#         return fmap, self.dp(self.linear1(torch.mean(x_lstm, dim=1)))
-
-# VID_IM_SIZE = 112
-
-# _NORM_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-# _NORM_STD  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-
-# def _pil_to_tensor(pil_img):
-#     """Version-safe PIL Image → normalised float32 tensor (3, H, W)."""
-#     arr = np.array(pil_img.convert("RGB"), dtype=np.float32) / 255.0
-#     t   = torch.from_numpy(arr).permute(2, 0, 1)
-#     return (t - _NORM_MEAN) / _NORM_STD
-
-# # Single model only.
-# VID_MODEL_FILE  = "model_95_acc_40_frames_FF_data.pt"
-# VID_SEQ_LEN     = 40
-# VID_MODEL_LABEL = "Video Detection Model"
-
-# @st.cache_resource(show_spinner=False)
-# def _load_vid_model(model_filename):
-#     """Loads and caches the video model, keyed on model_filename — downloads
-#     and loads at most once per app lifetime."""
-#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#     model_path = ensure_file(model_filename)   # downloads once, returns actual on-disk path
-#     m = _VideoModel(num_classes=2)
-#     m.load_state_dict(torch.load(model_path, map_location=device))
-#     m.to(device).eval()
-#     return m, device
-
-# def _detect_and_crop_face(frame_bgr):
-#     gray     = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-#     detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-#     faces    = detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-#     if len(faces) > 0:
-#         x, y, w, h = faces[0]
-#         pad = int(0.1 * min(w, h))
-#         x1 = max(0, x - pad);              y1 = max(0, y - pad)
-#         x2 = min(frame_bgr.shape[1], x+w+pad)
-#         y2 = min(frame_bgr.shape[0], y+h+pad)
-#         return frame_bgr[y1:y2, x1:x2]
-#     return frame_bgr
-
-# def _extract_vid_frames(video_path, sequence_length):
-#     cap          = cv2.VideoCapture(video_path)
-#     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-#     fps          = cap.get(cv2.CAP_PROP_FPS) or 25.0
-#     n            = min(sequence_length, total_frames)
-#     indices      = [int(i * total_frames / n) for i in range(n)]
-#     tensors, display_frames = [], []
-#     for idx in indices:
-#         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-#         ret, frame = cap.read()
-#         if not ret: continue
-#         face = _detect_and_crop_face(frame)
-#         rgb  = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
-#         pil  = PILImage.fromarray(rgb).resize((VID_IM_SIZE, VID_IM_SIZE), PILImage.LANCZOS)
-#         tensors.append(_pil_to_tensor(pil))
-#         display_frames.append((idx / fps, pil))
-#     cap.release()
-#     if not tensors: return None, []
-#     while len(tensors) < sequence_length: tensors.append(tensors[-1])
-#     stacked = torch.stack(tensors[:sequence_length])
-#     return stacked.unsqueeze(0), display_frames
-
-# def _get_vid_info(video_path):
-#     cap     = cv2.VideoCapture(video_path)
-#     fps     = cap.get(cv2.CAP_PROP_FPS) or 25.0
-#     total   = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-#     w       = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-#     h       = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-#     cap.release()
-#     dur     = total / fps
-#     dur_str = (f"{int(dur//60)}m {int(dur%60)}s" if dur >= 60 else f"{dur:.1f}s")
-#     return {"fps": fps, "total": total, "w": w, "h": h, "dur": dur, "dur_str": dur_str}
-
-# def _run_vid_prediction(model, device, video_tensor):
-#     video_tensor = video_tensor.float().to(device)
-#     with torch.no_grad():
-#         fmap, logits = model(video_tensor)
-#         probs = VF.softmax(logits, dim=1)[0]
-#     return int(probs.argmax().item()), probs[0].item(), probs[1].item()
-
-# # ── UI ────────────────────────────────────────────────────────────────────────
-# st.markdown('<div class="hero-title">🎬 Video Detector</div>', unsafe_allow_html=True)
-# st.caption("Phase 1: C2PA/SynthID provenance scan · Phase 2: ResNeXt50 + LSTM visual classifier.")
-# st.divider()
-
-# vl, vr = st.columns([1, 1], gap="large")
-# with vl:
-#     uvid = st.file_uploader("Upload video", type=["mp4","avi","mov","mkv","webm"], key="vup")
-#     st.markdown("<br>", unsafe_allow_html=True)
-#     st.caption(f"Model · {VID_MODEL_LABEL} ({VID_SEQ_LEN} frames · `{VID_MODEL_FILE}`)")
-#     st.markdown("<br>", unsafe_allow_html=True)
-#     vid_analyze_btn = st.button("🎬 Analyze Video", type="primary", use_container_width=True, key="vbtn")
-# with vr:
-#     vid_result_ph = st.empty()
-
-# if uvid and not vid_analyze_btn:
-#     with vr: vid_result_ph.video(uvid)
-
-# if uvid and vid_analyze_btn:
-#     vid_bytes = uvid.read()
-#     if len(vid_bytes) / (1024**2) > 500:
-#         st.error("File too large. Max 500 MB."); st.stop()
-#     suffix = os.path.splitext(uvid.name)[-1]
-#     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-#         tmp.write(vid_bytes); tmp_path = tmp.name
-#     try:
-#         # ── Phase 1: provenance check ────────────────────────────────────────
-#         with st.spinner("Scanning provenance metadata…"):
-#             p1 = run_phase1_video(tmp_path)
-
-#         if p1["evidence"]:
-#             render_phase1_ai_verdict(p1["evidence"])
-#             st.caption("Provenance evidence found — skipping the visual classifier.")
-#         else:
-#             render_phase1_clean_verdict()
-#             st.divider()
-
-#             # ── Phase 2: visual classifier ───────────────────────────────────
-#             info = _get_vid_info(tmp_path)
-#             status = st.empty()
-
-#             status.info("Loading model…")
-#             try:    model_v, device_v = _load_vid_model(VID_MODEL_FILE)
-#             except FileNotFoundError as e: st.error(str(e)); st.stop()
-
-#             status.info(f"Extracting {VID_SEQ_LEN} frames + face detection…")
-#             video_tensor, display_frames = _extract_vid_frames(tmp_path, VID_SEQ_LEN)
-#             if video_tensor is None:
-#                 st.error("Could not extract frames. Try a different video format."); st.stop()
-
-#             status.info("Running inference…")
-#             pred, fake_p, real_p = _run_vid_prediction(model_v, device_v, video_tensor)
-#             status.empty()
-
-#             is_fake  = (pred == 0)
-#             verdict  = "AI Generated" if is_fake else "Real"
-#             css_cls  = "fake" if is_fake else "real"
-#             conf_pct = int(fake_p*100) if is_fake else int(real_p*100)
-
-#             with vr:
-#                 vid_result_ph.markdown(
-#                     result_card_html(
-#                         verdict, css_cls, conf_pct,
-#                         fake_p if is_fake else real_p,
-#                         (f'<b>Verdict</b><br>'
-#                          f'<b>Fake score</b> · {fake_p:.4f} &nbsp; <b>Real score</b> · {real_p:.4f}<br>'
-#                          f'<b>Resolution</b> · {info["w"]}×{info["h"]} &nbsp;·&nbsp; <b>Duration</b> · {info["dur_str"]}<br>'
-#                          f'<b>FPS</b> · {info["fps"]:.1f} &nbsp;·&nbsp; <b>Total frames</b> · {info["total"]:,}<br>'
-#                          f'<b>Device</b> · {str(device_v).upper()} &nbsp;·&nbsp; <b>Model</b> · {VID_MODEL_LABEL}')
-#                     ), unsafe_allow_html=True)
-
-#             n_f  = len(display_frames)
-#             segs = "".join(
-#                 f'<div class="tl-seg tl-{"fake" if (i/max(n_f,1))<fake_p else "real"}" title="frame {i}"></div>'
-#                 for i in range(n_f))
-#             st.caption(f"Sequence timeline · {n_f} frames  🔴 Fake-leaning · 🟢 Real-leaning")
-#             st.markdown(f'<div class="tl-bar">{segs}</div>', unsafe_allow_html=True)
-
-#             st.caption("Sampled & face-cropped frames")
-#             CPR = 8
-#             for row in range(math.ceil(n_f / CPR)):
-#                 cols = st.columns(CPR)
-#                 for ci, col in enumerate(cols):
-#                     idx2 = row * CPR + ci
-#                     if idx2 >= n_f: break
-#                     ts, pil = display_frames[idx2]
-#                     with col:
-#                         st.image(pil, use_container_width=True)
-#                         st.markdown(f'<div class="frame-label {css_cls}">{verdict}<br><span style="opacity:0.5">{ts:.1f}s</span></div>', unsafe_allow_html=True)
-#     finally:
-#         if os.path.exists(tmp_path): os.unlink(tmp_path)
-
-# st.markdown(f"""
-# <div class="info-box">
-#     <b>Phase 1 — Provenance:</b> Structural scan for a C2PA manifest box (ISOBMFF 'uuid' box,
-#     per the C2PA spec) plus a best-effort text search for SynthID / known AI video-tool mentions
-#     in the file's own metadata. Presence detection only — not full cryptographic signature
-#     validation, and a miss does not mean the video is human-made.<br><br>
-#     <b>Phase 2 — {VID_MODEL_LABEL}:</b> ResNeXt50_32x4d → AdaptiveAvgPool2d(1) → LSTM(2048) →
-#     mean pool → Dropout(0.4) → Linear(2048,2). Softmax: index 0 = FAKE · index 1 = REAL.
-#     {VID_SEQ_LEN} evenly sampled frames · Haar cascade face crop (fallback: full frame) ·
-#     112×112 · ImageNet normalisation. Trained on FaceForensics++ · 95% accuracy.
-# </div>""", unsafe_allow_html=True)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 #  pages/3_🎬_Video_Detection.py
 #  Deepfake Video Detector
-#
-#  Phase 1 — split into two checks, same as the image detector's approach but
-#  adapted to video's ISOBMFF (MP4/MOV "box"/"atom") container format:
-#
-#    Check Provenance          Check Metadata
-#    ─────────────────         ─────────────────
-#    • C2PA (structural)       • XMP (structural, dedicated uuid box)
-#    • SynthID (text hint)     • Container metadata (moov/udta atoms)
-#    • Other trusted           • (Video has no traditional EXIF — the
-#      watermarks (XMP           closest equivalent is the container
-#      DigitalSourceType)        metadata check above)
-#
-#  Any hit in either check skips Phase 2 (same threshold as the image page).
-#
-#  Phase 2 — ResNeXt50 + LSTM visual classifier ("Video Detection Model").
+#  Phase 1: C2PA manifest + SynthID text-marker provenance check (structural,
+#           no ML — parses ISOBMFF boxes directly from the video file).
+#  Phase 2: ResNeXt50 + LSTM visual classifier ("Video Detection Model"),
+#           only runs if Phase 1 finds no provenance evidence.
 # ─────────────────────────────────────────────────────────────────────────────
 import os
 import math
-import re
 import struct
 import tempfile
 import numpy as np
@@ -808,26 +316,39 @@ with st.sidebar:
     st.caption("Model weights download automatically on first use and are cached for the session.")
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  PHASE 1 — BOX-LEVEL PARSING HELPERS (shared by provenance + metadata checks)
+#  PHASE 1 — VIDEO PROVENANCE CHECK (C2PA + SynthID text marker)
 # ═════════════════════════════════════════════════════════════════════════════
 #
-#  MP4/MOV files are ISOBMFF containers: a flat sequence of "boxes"/"atoms",
-#  each starting with a 4-byte big-endian size and a 4-byte type code, and
-#  some boxes (moov, udta, meta) contain nested child boxes. These helpers
-#  walk that structure directly rather than treating the file as opaque bytes.
+#  Structural parse of the file's top-level ISOBMFF ("box"/"atom") structure,
+#  looking for a 'uuid' box whose 16-byte identifier matches C2PA's registered
+#  UUID (per the C2PA spec / AWS MediaConvert's documented embedding format).
+#  This confirms a C2PA manifest box is present — it does NOT perform full
+#  cryptographic signature validation (that requires the full C2PA SDK).
+#
+#  SynthID detection here is a weaker, best-effort text search for "SynthID"
+#  mentions inside the video's own metadata atoms, in case a generation tool
+#  also wrote a plain-text label. This is NOT real watermark verification —
+#  a hit is a hint worth following up on, a miss just means "no label found."
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _iter_boxes_in_range(f, start, end):
-    """Yields (box_type, box_size, box_start, header_len) for each box in
-    [start, end), without loading file contents into memory."""
-    pos = start
-    while pos < end:
-        f.seek(pos)
+C2PA_UUID = bytes.fromhex("d8fec3d61b0e483c92975828877ec481")
+
+SYNTHID_TEXT_MARKERS = [b"synthid", b"SynthID"]
+KNOWN_AI_VIDEO_TOOLS = [
+    b"veo", b"sora", b"runway", b"pika", b"luma", b"kling",
+    b"stable video diffusion", b"gen-3", b"gen-2", b"haiper",
+]
+
+
+def _iter_top_level_boxes(f):
+    """Yields (box_type: bytes, box_size: int, box_start_offset: int) for
+    each top-level ISOBMFF box, without loading the whole file into memory."""
+    while True:
         header = f.read(8)
         if len(header) < 8:
             return
         size, box_type = struct.unpack(">I4s", header)
-        box_start = pos
+        start = f.tell() - 8
 
         if size == 1:
             ext = f.read(8)
@@ -836,86 +357,37 @@ def _iter_boxes_in_range(f, start, end):
             size = struct.unpack(">Q", ext)[0]
             header_len = 16
         elif size == 0:
-            size = end - box_start
+            remaining = f.seek(0, 2) - start
+            f.seek(start + 8)
+            size = remaining
             header_len = 8
         else:
             header_len = 8
 
-        if size < header_len or box_start + size > end:
-            return  # malformed / truncated box — stop rather than loop forever
-        yield box_type, size, box_start, header_len
-        pos = box_start + size
+        yield box_type, size, start
 
-
-def _find_child_box(f, parent_start, parent_end, target_type, skip_bytes=0):
-    """Finds the first direct child box of a given type within [parent_start,
-    parent_end). skip_bytes lets us skip a full-box version/flags header
-    (used by 'meta' boxes) before scanning children."""
-    for bt, size, bstart, hlen in _iter_boxes_in_range(f, parent_start + skip_bytes, parent_end):
-        if bt == target_type:
-            return bstart, size, hlen
-    return None
-
-
-def _find_uuid_payload(f, start, end, target_uuid):
-    """Finds a 'uuid' box matching target_uuid within [start, end) and
-    returns its raw payload bytes (after the 16-byte uuid identifier)."""
-    for bt, size, bstart, hlen in _iter_boxes_in_range(f, start, end):
-        if bt == b"uuid":
-            f.seek(bstart + hlen)
-            uid = f.read(16)
-            if uid == target_uuid:
-                payload_start = bstart + hlen + 16
-                payload_len = size - hlen - 16
-                f.seek(payload_start)
-                return f.read(min(payload_len, 500_000))  # cap read, XMP packets are small
-    return None
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  CHECK PROVENANCE — C2PA · SynthID · other trusted watermarks
-# ═════════════════════════════════════════════════════════════════════════════
-
-# C2PA's registered UUID for the ISOBMFF 'uuid' box (per C2PA spec / AWS MediaConvert docs)
-C2PA_UUID = bytes.fromhex("d8fec3d61b0e483c92975828877ec481")
-# The widely-used XMP UUID for ISO base media files (per Adobe's XMP-in-MP4 embedding spec)
-XMP_UUID  = bytes.fromhex("be7acfcb97a942e89c71999491e3afac")
-
-SYNTHID_TEXT_MARKERS = [b"synthid"]
-
-# IPTC/C2PA DigitalSourceType values — the standard cross-format vocabulary
-# for labeling AI-generated or AI-composited media (same list the image
-# detector checks in XMP/IPTC). A hit here counts as "other trusted watermark"
-# provenance evidence, distinct from a full C2PA manifest or SynthID mention.
-AI_DIGITAL_SOURCE_VALUES = [
-    "trainedalgorithmicmedia", "compositewithtrainedalgorithmicmedia",
-    "algorithmicmedia", "compositewithalgorithmicmedia",
-    "softwareagent", "trainedmodel",
-]
-
-KNOWN_AI_VIDEO_TOOLS = [
-    "veo", "sora", "runway", "pika", "luma", "kling",
-    "stable video diffusion", "gen-3", "gen-2", "haiper",
-]
+        next_pos = start + size
+        if size < header_len or next_pos <= start:
+            return  # malformed box, stop rather than loop forever
+        f.seek(next_pos)
 
 
 def check_c2pa_video(video_path: str) -> dict:
     """Scans top-level ISOBMFF boxes for a 'uuid' box matching C2PA's
-    registered identifier. Structural detection, not full signature
-    validation (that requires the full C2PA SDK)."""
+    registered identifier."""
     hits = []
     try:
         with open(video_path, "rb") as f:
-            file_size = f.seek(0, 2)
             is_isobmff = False
-            for bt, size, bstart, hlen in _iter_boxes_in_range(f, 0, file_size):
-                if bt == b"ftyp":
+            for box_type, size, start in _iter_top_level_boxes(f):
+                if box_type == b"ftyp":
                     is_isobmff = True
-                if bt == b"uuid":
-                    f.seek(bstart + hlen)
-                    uid = f.read(16)
-                    if uid == C2PA_UUID:
-                        f.seek(bstart + hlen + 16 + 4)  # skip 4 reserved bytes
+
+                if box_type == b"uuid":
+                    f.seek(start + 8)
+                    uuid_bytes = f.read(16)
+                    if uuid_bytes == C2PA_UUID:
+                        f.seek(start + 8 + 16 + 4)  # skip 4 reserved bytes
                         purpose = b""
                         for _ in range(32):
                             b = f.read(1)
@@ -923,148 +395,63 @@ def check_c2pa_video(video_path: str) -> dict:
                                 break
                             purpose += b
                         hits.append({
-                            "category": "provenance", "tag": "C2PA", "tag_class": "tag-c2pa",
-                            "text": f"C2PA manifest box found (ISOBMFF uuid box), "
-                                    f"purpose={purpose.decode('utf-8', errors='replace') or 'unknown'}",
+                            "tag": "C2PA", "tag_class": "tag-c2pa",
+                            "label": "C2PA manifest box (ISOBMFF)",
+                            "text": f"C2PA UUID box found, purpose={purpose.decode('utf-8', errors='replace') or 'unknown'}",
                         })
+                    f.seek(start + size)
+
             if not is_isobmff:
-                return {"hits": [], "applicable": False,
-                        "note": "Not a recognized ISOBMFF (MP4/MOV) container — skipped."}
+                return {"applicable": False, "hits": [], "note": "Not a recognized ISOBMFF (MP4/MOV) container — skipped."}
+
     except (OSError, struct.error) as e:
-        return {"hits": [], "applicable": False, "note": f"Could not parse file structure: {e}"}
-    return {"hits": hits, "applicable": True}
+        return {"applicable": False, "hits": [], "note": f"Could not parse file structure: {e}"}
+
+    return {"applicable": True, "hits": hits}
 
 
-def check_synthid_video(video_path: str, scan_bytes: int = 20_000_000) -> dict:
-    """Best-effort raw text search for a 'SynthID' mention anywhere in the
-    file's own bytes. NOT real watermark verification — SynthID's actual
-    algorithmic watermark can only be confirmed via Google's own detection
-    tooling. A hit here is a text-label hint, not proof."""
+def check_synthid_text_marker(video_path: str, scan_bytes: int = 20_000_000) -> dict:
+    """Best-effort text search for 'SynthID' or known AI video-tool names.
+    NOT real watermark detection — see module note above."""
+    hits = []
     try:
         with open(video_path, "rb") as f:
             data = f.read(scan_bytes)
     except OSError as e:
         return {"hits": [], "note": f"Could not read file: {e}"}
+
     lower = data.lower()
-    hits = []
     for marker in SYNTHID_TEXT_MARKERS:
-        if marker in lower:
+        if marker.lower() in lower:
             hits.append({
-                "category": "provenance", "tag": "SYNTHID", "tag_class": "tag-synthid",
-                "text": "'SynthID' mentioned in the file's own bytes/metadata — "
-                        "text label hint, not a verified watermark check.",
+                "tag": "SYNTHID", "tag_class": "tag-synthid",
+                "label": "SynthID text mention",
+                "text": "'SynthID' appears in the file's own bytes/metadata — text label hint, not a verified watermark check.",
             })
             break
-    return {"hits": hits}
 
-
-def check_other_watermarks_video(xmp_text: str) -> dict:
-    """Checks an extracted XMP payload for IPTC/C2PA DigitalSourceType values
-    — the standard vocabulary for labeling AI-generated/composited media.
-    Counted as 'other trusted watermark' provenance evidence."""
-    hits = []
-    if xmp_text:
-        low = xmp_text.lower()
-        for av in AI_DIGITAL_SOURCE_VALUES:
-            if av in low:
-                hits.append({
-                    "category": "provenance", "tag": "WATERMARK", "tag_class": "tag-watermark",
-                    "text": f"XMP DigitalSourceType = {av} (IPTC/C2PA AI-provenance label)",
-                })
-                break
-    return {"hits": hits}
-
-
-# ═════════════════════════════════════════════════════════════════════════════
-#  CHECK METADATA — XMP (structural) · container metadata (moov/udta)
-# ═════════════════════════════════════════════════════════════════════════════
-
-def extract_xmp_video(video_path: str) -> str:
-    """Finds the dedicated XMP 'uuid' box at the top level of the file and
-    returns its decoded payload text, or '' if none is present."""
-    try:
-        with open(video_path, "rb") as f:
-            file_size = f.seek(0, 2)
-            payload = _find_uuid_payload(f, 0, file_size, XMP_UUID)
-            if payload:
-                return payload.decode("utf-8", errors="replace")
-    except (OSError, struct.error):
-        pass
-    return ""
-
-
-def check_xmp_metadata_video(xmp_text: str) -> dict:
-    """Checks an extracted XMP payload for CreatorTool / software mentions —
-    generator-name evidence, not a provenance/trust signal by itself."""
-    hits = []
-    if xmp_text:
-        low = xmp_text.lower()
-        for sw in KNOWN_AI_VIDEO_TOOLS:
-            if sw in low:
-                hits.append({
-                    "category": "metadata", "tag": "XMP", "tag_class": "tag-xmp",
-                    "text": f"XMP metadata mentions a known AI video tool: {sw}",
-                })
-                break
-        m = re.search(r'creatortool[^>]*>([^<]{1,100})', low)
-        if m:
-            creator = m.group(1).strip()
+    for tool in KNOWN_AI_VIDEO_TOOLS:
+        if tool in lower:
             hits.append({
-                "category": "metadata", "tag": "XMP", "tag_class": "tag-xmp",
-                "text": f"xmp:CreatorTool = {creator}",
-            })
-    return {"hits": hits}
-
-
-def check_container_metadata_video(video_path: str) -> dict:
-    """Walks the real box tree (moov → udta) to scope the search to the
-    video's own metadata atoms — the closest video equivalent to a photo's
-    EXIF block — rather than scanning the whole file blindly."""
-    hits = []
-    try:
-        with open(video_path, "rb") as f:
-            file_size = f.seek(0, 2)
-            moov = _find_child_box(f, 0, file_size, b"moov")
-            if not moov:
-                return {"hits": [], "note": "No 'moov' box found — container metadata unavailable."}
-            m_start, m_size, m_hlen = moov
-            udta = _find_child_box(f, m_start + m_hlen, m_start + m_size, b"udta")
-            if not udta:
-                return {"hits": [], "note": "No 'udta' (user data / metadata) box found in this file."}
-            u_start, u_size, u_hlen = udta
-            f.seek(u_start + u_hlen)
-            blob = f.read(u_size - u_hlen).lower()
-    except (OSError, struct.error) as e:
-        return {"hits": [], "note": f"Could not parse container metadata: {e}"}
-
-    for sw in KNOWN_AI_VIDEO_TOOLS:
-        if sw.encode() in blob:
-            hits.append({
-                "category": "metadata", "tag": "CONTAINER", "tag_class": "tag-container",
-                "text": f"Container metadata (moov/udta) mentions a known AI video tool: {sw}",
+                "tag": "TOOL", "tag_class": "tag-tool",
+                "label": "AI video tool mention",
+                "text": f"Metadata mentions a known AI video generation tool: {tool.decode()}",
             })
             break
+
     return {"hits": hits}
 
 
 def run_phase1_video(video_path: str) -> dict:
-    """Runs both checks and returns them split by category, matching the
-    Provenance / Metadata grouping shown in the UI."""
-    c2pa_result   = check_c2pa_video(video_path)
-    synthid_result = check_synthid_video(video_path)
-    xmp_text       = extract_xmp_video(video_path)
-    watermark_result = check_other_watermarks_video(xmp_text)
-    xmp_meta_result   = check_xmp_metadata_video(xmp_text)
-    container_result  = check_container_metadata_video(video_path)
-
-    provenance = c2pa_result["hits"] + synthid_result["hits"] + watermark_result["hits"]
-    metadata   = xmp_meta_result["hits"] + container_result["hits"]
-
+    """Combined Phase 1 video provenance check. Returns a flat evidence list —
+    the 'tag' field distinguishes strong (C2PA) vs weak (text marker) signals."""
+    c2pa_result = check_c2pa_video(video_path)
+    synthid_result = check_synthid_text_marker(video_path)
+    evidence = list(c2pa_result.get("hits", [])) + list(synthid_result.get("hits", []))
     return {
-        "provenance": provenance,
-        "metadata": metadata,
+        "evidence": evidence,
         "container_recognized": c2pa_result.get("applicable", False),
-        "note": c2pa_result.get("note") or container_result.get("note"),
+        "note": c2pa_result.get("note"),
     }
 
 
@@ -1074,23 +461,19 @@ st.markdown("""
 .verdict-ai-vid {
     display: inline-flex; align-items: center; gap: 10px;
     background: #052e16; border: 1px solid #166534;
-    border-radius: 999px; padding: 9px 20px; margin: 14px 0 0;
+    border-radius: 999px; padding: 9px 20px; margin: 20px 0 0;
 }
 .verdict-ai-vid .check { color: #4ade80; font-size: 15px; }
 .verdict-ai-vid .title { color: #4ade80; font-weight: 600; font-size: 14px; }
 .verdict-clean-vid {
     display: inline-flex; align-items: center; gap: 10px;
     background: #141414; border: 1px solid #2a2a2a;
-    border-radius: 999px; padding: 9px 20px; margin: 14px 0 0;
+    border-radius: 999px; padding: 9px 20px; margin: 20px 0 0;
 }
 .verdict-clean-vid .title { color: #6b7280; font-weight: 600; font-size: 14px; }
-.check-section-label {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
-    color: #4b5563; text-transform: uppercase; margin: 20px 0 6px;
-}
 .evidence-header-vid {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
-    color: #4b5563; text-transform: uppercase; margin: 10px 0 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.12em;
+    color: #4b5563; text-transform: uppercase; margin: 18px 0 8px;
 }
 .ev-row-vid {
     display: flex; align-items: center; gap: 10px;
@@ -1101,11 +484,9 @@ st.markdown("""
     font-size: 9px; font-weight: 700; letter-spacing: 0.07em;
     padding: 3px 8px; border-radius: 4px; flex-shrink: 0; text-transform: uppercase;
 }
-.tag-c2pa      { background:#1c1007; color:#fdba74; border:1px solid #92400e; }
-.tag-synthid   { background:#042f2e; color:#5eead4; border:1px solid #134e4a; }
-.tag-watermark { background:#1e1b4b; color:#c4b5fd; border:1px solid #3730a3; }
-.tag-xmp       { background:#0f172a; color:#93c5fd; border:1px solid #1e3a8a; }
-.tag-container { background:#0a1628; color:#7dd3fc; border:1px solid #1e3a5f; }
+.tag-c2pa    { background:#1c1007; color:#fdba74; border:1px solid #92400e; }
+.tag-synthid { background:#042f2e; color:#5eead4; border:1px solid #134e4a; }
+.tag-tool    { background:#0f172a; color:#93c5fd; border:1px solid #1e3a8a; }
 .ev-text-vid {
     font-size: 12.5px; color: #9ca3af;
     background: #1a1a1a; border: 1px solid #272727;
@@ -1113,20 +494,20 @@ st.markdown("""
 }
 .notmean-block-vid {
     background: #0d0d0d; border: 1px solid #1e1e1e; border-left: 3px solid #27272a;
-    border-radius: 8px; padding: 16px 20px; margin: 10px 0 0;
-    font-size: 12.5px; color: #4b5563; line-height: 1.7;
+    border-radius: 8px; padding: 18px 22px; margin: 16px 0 0;
+    font-size: 13px; color: #4b5563; line-height: 1.75;
 }
 .notmean-block-vid strong {
     color: #6b7280; font-size: 11px; text-transform: uppercase;
-    letter-spacing: 0.06em; display: block; margin-bottom: 8px;
+    letter-spacing: 0.06em; display: block; margin-bottom: 10px;
 }
 </style>
 """, unsafe_allow_html=True)
 
 
-def render_evidence_rows(hits):
+def render_phase1_evidence(evidence):
     rows = ""
-    for ev in hits:
+    for ev in evidence:
         rows += (
             f'<div class="ev-row-vid">'
             f'<span class="ev-tag-vid {ev["tag_class"]}">{ev["tag"]}</span>'
@@ -1140,35 +521,34 @@ def render_evidence_rows(hits):
     )
 
 
-def render_check_block(title, hits, clean_note):
-    st.markdown(f'<div class="check-section-label">{title}</div>', unsafe_allow_html=True)
-    if hits:
-        st.markdown(
-            '<div class="verdict-ai-vid"><span class="check">✓</span>'
-            '<span class="title">Evidence found</span></div>',
-            unsafe_allow_html=True,
-        )
-        render_evidence_rows(hits)
-    else:
-        st.markdown(
-            '<div class="verdict-clean-vid"><span class="title">Nothing found</span></div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(f'<div class="notmean-block-vid">{clean_note}</div>', unsafe_allow_html=True)
+def render_phase1_ai_verdict(evidence):
+    has_c2pa = any(e["tag"] == "C2PA" for e in evidence)
+    st.markdown(
+        '<div class="verdict-ai-vid">'
+        '<span class="check">✓</span>'
+        f'<span class="title">{"AI provenance verified" if has_c2pa else "Provenance hint found"}</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    render_phase1_evidence(evidence)
 
 
-PROVENANCE_CLEAN_NOTE = (
-    "<strong>What this does NOT mean</strong>"
-    "No C2PA manifest, SynthID mention, or DigitalSourceType AI label was found in this file's own "
-    "bytes. That does NOT mean the video is real / human-made — re-encoding, re-uploading to social "
-    "platforms, and screen recording all strip this kind of provenance data routinely."
-)
-METADATA_CLEAN_NOTE = (
-    "<strong>What this does NOT mean</strong>"
-    "No XMP packet or generator mention was found in this file's container metadata (moov/udta) — "
-    "the closest video equivalent to a photo's EXIF block. Metadata is even easier to strip than "
-    "provenance signatures, so a miss here is common and not evidence of anything either way."
-)
+def render_phase1_clean_verdict():
+    st.markdown(
+        '<div class="verdict-clean-vid"><span class="title">No provenance metadata</span></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="notmean-block-vid">'
+        '<strong>What this does NOT mean</strong>'
+        '"No provenance metadata" does NOT mean the video is real / human-made. '
+        'It means the file has no C2PA manifest box or SynthID text label detectable '
+        'in its own bytes. Re-encoding, re-uploading to social platforms, and screen '
+        'recording all strip this kind of metadata routinely — so a miss here is common '
+        'even for genuinely AI-generated video. Running the visual classifier below.'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1278,7 +658,7 @@ def _run_vid_prediction(model, device, video_tensor):
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 st.markdown('<div class="hero-title">🎬 Video Detector</div>', unsafe_allow_html=True)
-st.caption("Phase 1: Provenance (C2PA/SynthID/watermarks) + Metadata (XMP/container) · Phase 2: ResNeXt50 + LSTM classifier.")
+st.caption("Phase 1: C2PA/SynthID provenance scan · Phase 2: ResNeXt50 + LSTM visual classifier.")
 st.divider()
 
 vl, vr = st.columns([1, 1], gap="large")
@@ -1302,19 +682,15 @@ if uvid and vid_analyze_btn:
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(vid_bytes); tmp_path = tmp.name
     try:
-        # ── Phase 1: provenance + metadata checks ────────────────────────────
-        with st.spinner("Scanning provenance and metadata…"):
+        # ── Phase 1: provenance check ────────────────────────────────────────
+        with st.spinner("Scanning provenance metadata…"):
             p1 = run_phase1_video(tmp_path)
 
-        render_check_block("Check Provenance", p1["provenance"], PROVENANCE_CLEAN_NOTE)
-        render_check_block("Check Metadata",   p1["metadata"],   METADATA_CLEAN_NOTE)
-
-        any_hits = p1["provenance"] or p1["metadata"]
-
-        if any_hits:
-            st.divider()
-            st.caption("Evidence found in Phase 1 — skipping the visual classifier.")
+        if p1["evidence"]:
+            render_phase1_ai_verdict(p1["evidence"])
+            st.caption("Provenance evidence found — skipping the visual classifier.")
         else:
+            render_phase1_clean_verdict()
             st.divider()
 
             # ── Phase 2: visual classifier ───────────────────────────────────
@@ -1374,16 +750,15 @@ if uvid and vid_analyze_btn:
 
 st.markdown(f"""
 <div class="info-box">
-    <b>Check Provenance:</b> C2PA manifest box (ISOBMFF uuid box, structural parse) ·
-    SynthID text mention (heuristic, not verified watermark check) · other trusted watermarks
-    via IPTC/C2PA DigitalSourceType label inside XMP.<br><br>
-    <b>Check Metadata:</b> XMP packet (dedicated uuid box, structural parse — CreatorTool /
-    generator mentions) · container metadata (moov/udta atoms — the closest video equivalent
-    to a photo's EXIF block, since MP4/MOV containers don't carry traditional EXIF).<br><br>
-    Any hit in either check is presence detection only — not cryptographic proof — and a
-    miss in either does not mean the video is real or human-made.<br><br>
+    <b>Phase 1 — Provenance:</b> Structural scan for a C2PA manifest box (ISOBMFF 'uuid' box,
+    per the C2PA spec) plus a best-effort text search for SynthID / known AI video-tool mentions
+    in the file's own metadata. Presence detection only — not full cryptographic signature
+    validation, and a miss does not mean the video is human-made.<br><br>
     <b>Phase 2 — {VID_MODEL_LABEL}:</b> ResNeXt50_32x4d → AdaptiveAvgPool2d(1) → LSTM(2048) →
     mean pool → Dropout(0.4) → Linear(2048,2). Softmax: index 0 = FAKE · index 1 = REAL.
     {VID_SEQ_LEN} evenly sampled frames · Haar cascade face crop (fallback: full frame) ·
     112×112 · ImageNet normalisation. Trained on FaceForensics++ · 95% accuracy.
 </div>""", unsafe_allow_html=True)
+
+
+
